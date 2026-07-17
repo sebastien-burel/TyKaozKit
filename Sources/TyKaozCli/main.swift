@@ -74,6 +74,11 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
             return nil
         }
         return JSProviders.anthropic(apiKey: key, model: model, baseURL: env["ANTHROPIC_BASE_URL"])
+    case "js-openai":
+        guard let key = env["OPENAI_API_KEY"], !key.isEmpty, let model, !model.isEmpty else {
+            return nil
+        }
+        return JSProviders.openai(apiKey: key, model: model, baseURL: env["OPENAI_BASE_URL"])
     case "local":
         let base = env["TYKAOZ_LOCAL_BASE_URL"] ?? "http://localhost:1234/v1"
         guard let url = URL(string: base), let model, !model.isEmpty else { return nil }
