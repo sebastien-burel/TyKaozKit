@@ -37,6 +37,16 @@ let inputJSON = popFlag("--input")
 let libraryDir = popFlag("--library")
 let timeout = TimeInterval(popFlag("--timeout") ?? "") ?? 60
 
+// Dev harness for the native __http primitive + XMLHttpRequest shim (C1): runs
+// a bare engine (no provider/LLM) and prints the JSON on `globalThis.__result`.
+if let probePath = popFlag("--http-eval") {
+    guard let probeSrc = try? String(contentsOf: URL(fileURLWithPath: probePath), encoding: .utf8) else {
+        die("error: cannot read --http-eval script at \(probePath)")
+    }
+    print(JSHttpProbe.run(script: probeSrc, timeout: timeout) ?? "null")
+    exit(0)
+}
+
 guard let scriptPath = args.first else {
     die("""
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \

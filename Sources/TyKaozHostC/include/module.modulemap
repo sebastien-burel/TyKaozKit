@@ -1,4 +1,5 @@
 module TyKaozHostC {
     header "tykaozHost.h"
+    header "httpHost.h"
     export *
 }
