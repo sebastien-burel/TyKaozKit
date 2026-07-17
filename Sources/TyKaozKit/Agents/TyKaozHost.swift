@@ -1,0 +1,292 @@
+import Foundation
+import XSBridge
+import XSBridgeKit
+import TyKaozHostC
+
+/// TyKaoz's host capabilities for a running JS agent. The C target
+/// (`TyKaozHostC`) installs `host.*` functions that marshal arguments and hand
+/// `(bridge, id, json)` to the `@_cdecl` entry points below; each recovers this
+/// object from the bridge context and settles the call via `HostReply`
+/// (`xsBridgeComplete` / `xsBridgeEmitToken`). No `xsSlot` ever crosses into
+/// Swift — only opaque ids and UTF-8 JSON.
+///
+/// Concurrency: the entry points run on the engine's private XS thread. Work
+/// touching `@MainActor` state (tools, memory, provider) hops via
+/// `Task { @MainActor in … }` and settles through the thread-safe `HostReply`,
+/// which wakes the engine's run loop. We never block the XS thread.
+public nonisolated final class TyKaozHost {
+
+    public let makeProvider: @Sendable () -> (any LLMProvider)?
+    public let tools: ToolRegistry
+    public let memory: MemoryStoring
+    public let log: @Sendable (String) -> Void
+
+    /// Set by the owning runtime before a run: the agent's result (`__report`)
+    /// and failure (`__fail`) channels. Set once, no real race.
+    public nonisolated(unsafe) var onReport: ((String) -> Void)?
+    public nonisolated(unsafe) var onFail: ((String) -> Void)?
+    /// JS-tool result delivery (`__toolResult`) for `JSToolBundle`.
+    public nonisolated(unsafe) var onToolResult: (([Any]) -> Void)?
+
+    public init(
+        makeProvider: @escaping @Sendable () -> (any LLMProvider)?,
+        tools: ToolRegistry,
+        memory: MemoryStoring,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        self.makeProvider = makeProvider
+        self.tools = tools
+        self.memory = memory
+        self.log = log
+    }
+
+    // MARK: - Handlers (settle via HostReply)
+
+    /// Defensive cap on provider → tool → provider iterations, mirroring
+    /// `ChatSession.maxToolRounds`.
+    private static let maxToolRounds = 20
+
+    public func chat(params: [Any], reply: HostReply) {
+        guard let provider = makeProvider() else {
+            reply.reject(AgentJSON.string("no LLM provider configured"))
+            return
+        }
+        var history = AgentJSON.decodeMessages(params.first)
+        let requestedNames: [String] = (params.count > 1 ? params[1] as? [Any] : nil)?
+            .compactMap { $0 as? String } ?? []
+
+        Task { @MainActor in
+            let available = self.tools.specs
+            var specs: [ToolSpec] = []
+            for name in requestedNames {
+                guard let spec = available.first(where: { $0.name == name }) else {
+                    reply.reject(AgentJSON.string("unknown tool: \(name)"))
+                    return
+                }
+                specs.append(spec)
+            }
+
+            do {
+                var lastText = ""
+                for _ in 0..<Self.maxToolRounds {
+                    var text = ""
+                    var reasoning = ""
+                    var pendingCalls: [(id: String, name: String, args: String, signature: String?)] = []
+
+                    for try await event in provider.chat(messages: history, tools: specs) {
+                        switch event {
+                        case .textDelta(let delta):
+                            text += delta
+                            reply.emit(AgentJSON.string(delta))
+                        case .reasoningDelta(let delta):
+                            reasoning += delta
+                        case .toolCall(let id, let name, let args, let signature):
+                            pendingCalls.append((id, name, args, signature))
+                        case .imageOutput, .metrics:
+                            break
+                        }
+                    }
+
+                    if pendingCalls.isEmpty {
+                        reply.resolve(AgentJSON.string(text))
+                        return
+                    }
+
+                    if !text.isEmpty || !reasoning.isEmpty {
+                        history.append(ChatMessage(
+                            role: .assistant,
+                            content: text,
+                            reasoningContent: reasoning.isEmpty ? nil : reasoning))
+                    }
+                    for call in pendingCalls {
+                        history.append(ChatMessage(
+                            role: .toolCall,
+                            content: call.args,
+                            toolCallID: call.id,
+                            toolName: call.name,
+                            thoughtSignature: call.signature))
+                    }
+                    for call in pendingCalls {
+                        let result = await self.tools.execute(
+                            ToolCall(id: call.id, toolName: call.name, arguments: Data(call.args.utf8)))
+                        history.append(ChatMessage(
+                            role: .toolResult,
+                            content: result.content,
+                            toolCallID: result.callID,
+                            toolIsError: result.isError))
+                    }
+                    lastText = text
+                }
+                reply.resolve(AgentJSON.string(lastText))
+            } catch {
+                reply.reject(AgentJSON.string(error.localizedDescription))
+            }
+        }
+    }
+
+    public func toolList(reply: HostReply) {
+        let tools = self.tools
+        Task { @MainActor in reply.resolve(Self.toolListJSON(tools)) }
+    }
+
+    public func toolCall(params: [Any], reply: HostReply) {
+        guard let name = params.first as? String else {
+            reply.reject(AgentJSON.string("tool.call expects [name, args]"))
+            return
+        }
+        let argsJSON = params.count > 1 ? AgentJSON.string(params[1]) : "{}"
+        let tools = self.tools
+        Task { @MainActor in
+            let result = await tools.execute(
+                ToolCall(id: UUID().uuidString, toolName: name, arguments: Data(argsJSON.utf8)))
+            result.isError
+                ? reply.reject(AgentJSON.string(result.content))
+                : reply.resolve(AgentJSON.string(result.content))
+        }
+    }
+
+    public func memorySave(params: [Any], reply: HostReply) {
+        let title = (params.first as? String) ?? ""
+        let content = (params.count > 1 ? params[1] as? String : nil) ?? ""
+        let memory = self.memory
+        Task { @MainActor in
+            let saved = memory.add(title: title, content: content)
+            reply.resolve(AgentJSON.string(saved.id.uuidString))
+        }
+    }
+
+    public func memoryRead(params: [Any], reply: HostReply) {
+        guard let idString = params.first as? String, let id = UUID(uuidString: idString) else {
+            reply.reject(AgentJSON.string("memory.read expects a valid id"))
+            return
+        }
+        let memory = self.memory
+        Task { @MainActor in
+            guard let found = memory.memory(id: id) else { reply.resolve("null"); return }
+            reply.resolve(AgentJSON.string([
+                "id": found.id.uuidString, "title": found.title, "content": found.content
+            ]))
+        }
+    }
+
+    public func memoryList(reply: HostReply) {
+        let memory = self.memory
+        Task { @MainActor in
+            let list = memory.memories.map { ["id": $0.id.uuidString, "title": $0.title] }
+            reply.resolve(AgentJSON.string(list))
+        }
+    }
+
+    // MARK: - Helpers
+
+    @MainActor
+    private static func toolListJSON(_ tools: ToolRegistry) -> String {
+        let entries: [[String: Any]] = tools.specs.map { spec in
+            var schema: Any = [:]
+            if let data = spec.inputSchemaJSON.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) {
+                schema = parsed
+            }
+            return ["name": spec.name, "description": spec.description, "input_schema": schema]
+        }
+        return AgentJSON.string(entries)
+    }
+}
+
+extension XSEngine {
+    /// Create an engine with TyKaoz's host functions installed, the bridge
+    /// context pointed at `host`, and the JS orchestrator (`host.llm.chat`,
+    /// `__runAgent`, `__callTool`) installed. All XS access on the XS thread.
+    public static func tyKaoz(host: TyKaozHost) -> XSEngine? {
+        guard let engine = XSEngine() else { return nil }
+        let hostPtr = Unmanaged.passUnretained(host).toOpaque()
+        engine.withMachine { machine in
+            xsBridgeTyKaozInstall(machine)
+            xsBridgeSetContext(machine, hostPtr)
+        }
+        _ = try? engine.eval(AgentOrchestrator.js)
+        return engine
+    }
+}
+
+/// Settles or streams an in-flight async host call from any thread — the flat-C
+/// replacement for the old `HostResponder`. Thread-safe: the settle functions
+/// queue the result and wake the engine's run loop.
+public nonisolated struct HostReply {
+    public let bridge: UnsafeMutableRawPointer
+    public let id: UInt32
+    public func resolve(_ json: String) { json.withCString { xsBridgeComplete(bridge, id, 1, $0) } }
+    public func reject(_ json: String) { json.withCString { xsBridgeComplete(bridge, id, 0, $0) } }
+    public func emit(_ json: String) { json.withCString { xsBridgeEmitToken(bridge, id, $0) } }
+}
+
+/// Recover the `TyKaozHost` a bridge points at (set via `xsBridgeSetContext`
+/// after install). Unretained — the host outlives the engine by construction.
+private func tyHost(_ bridge: UnsafeMutableRawPointer) -> TyKaozHost? {
+    guard let ctx = xsBridgeGetContext(bridge) else { return nil }
+    return Unmanaged<TyKaozHost>.fromOpaque(ctx).takeUnretainedValue()
+}
+
+private func string(_ p: UnsafePointer<CChar>?) -> String { p.map { String(cString: $0) } ?? "" }
+
+// MARK: - C-callable entry points (installed by TyKaozHostC, resolved at link)
+
+@_cdecl("xsbTyLog")
+func xsbTyLog(_ bridge: UnsafeMutableRawPointer?, _ text: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.log(string(text))
+}
+
+@_cdecl("xsbTyReport")
+func xsbTyReport(_ bridge: UnsafeMutableRawPointer?, _ json: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.onReport?(string(json))
+}
+
+@_cdecl("xsbTyFail")
+func xsbTyFail(_ bridge: UnsafeMutableRawPointer?, _ text: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.onFail?(string(text))
+}
+
+@_cdecl("xsbTyChat")
+func xsbTyChat(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32, _ json: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.chat(params: AgentJSON.params(string(json)), reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyToolList")
+func xsbTyToolList(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.toolList(reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyToolCall")
+func xsbTyToolCall(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32, _ json: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.toolCall(params: AgentJSON.params(string(json)), reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyMemorySave")
+func xsbTyMemorySave(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32, _ json: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.memorySave(params: AgentJSON.params(string(json)), reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyMemoryRead")
+func xsbTyMemoryRead(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32, _ json: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.memoryRead(params: AgentJSON.params(string(json)), reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyMemoryList")
+func xsbTyMemoryList(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.memoryList(reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyToolResult")
+func xsbTyToolResult(_ bridge: UnsafeMutableRawPointer?, _ json: UnsafePointer<CChar>?) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.onToolResult?(AgentJSON.params(string(json)))
+}
