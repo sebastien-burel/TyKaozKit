@@ -69,6 +69,11 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
             return nil
         }
         return AnthropicProvider(apiKey: key, model: model)
+    case "js-anthropic":
+        guard let key = env["ANTHROPIC_API_KEY"], !key.isEmpty, let model, !model.isEmpty else {
+            return nil
+        }
+        return JSProviders.anthropic(apiKey: key, model: model, baseURL: env["ANTHROPIC_BASE_URL"])
     case "local":
         let base = env["TYKAOZ_LOCAL_BASE_URL"] ?? "http://localhost:1234/v1"
         guard let url = URL(string: base), let model, !model.isEmpty else { return nil }
