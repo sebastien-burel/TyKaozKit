@@ -50,7 +50,18 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
         messages: [ChatMessage], tools: [ToolSpec]
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            lock.lock(); self.continuation = continuation; lock.unlock()
+            lock.lock()
+            // The engine is shared (cached) across chats of the same config, and
+            // its event channel isn't multiplexed — one chat at a time. A second
+            // concurrent chat fails loudly rather than corrupting the first.
+            if self.continuation != nil {
+                lock.unlock()
+                continuation.finish(throwing: XSError(
+                    message: "JS provider busy — concurrent chats on a shared engine aren't supported"))
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
 
             let request: [String: Any] = [
                 "messages": messages.map(Self.encode),

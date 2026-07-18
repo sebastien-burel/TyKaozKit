@@ -6,13 +6,39 @@ import Foundation
 /// (`apiKey`/`model`/`baseURL`) is passed per request via `request.config`.
 public enum JSProviders {
 
+    // A JSProvider owns an XS engine, so creating one per SwiftUI render (as a
+    // provider factory called in `body` does) would spin up a machine on every
+    // token. Cache instances by their config so repeated builds reuse the same
+    // engine; the per-request payload (messages/tools) is passed at chat time,
+    // not baked into the engine.
+    private static let cacheLock = NSLock()
+    private static var cache: [String: JSProvider] = [:]
+
+    private static func cached(
+        id: String, displayName: String, providerJS: String, config: [String: Any]
+    ) -> JSProvider? {
+        let key = [id,
+                   (config["apiKey"] as? String) ?? "",
+                   (config["model"] as? String) ?? "",
+                   (config["baseURL"] as? String) ?? ""].joined(separator: "\u{1}")
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let existing = cache[key] { return existing }
+        guard let provider = JSProvider(
+            id: id, displayName: displayName, providerJS: providerJS, config: config)
+        else { return nil }
+        cache[key] = provider
+        return provider
+    }
+
+
     /// Anthropic Messages API, written in JavaScript (the JS-first counterpart
     /// of the Swift `AnthropicProvider`). `baseURL` overrides the endpoint (for
     /// tests / proxies); defaults to https://api.anthropic.com.
     public static func anthropic(apiKey: String, model: String, baseURL: String? = nil) -> JSProvider? {
         var config: [String: Any] = ["apiKey": apiKey, "model": model]
         if let baseURL { config["baseURL"] = baseURL }
-        return JSProvider(
+        return cached(
             id: "anthropic-js", displayName: "Anthropic (JS)",
             providerJS: anthropicJS, config: config)
     }
@@ -23,9 +49,21 @@ public enum JSProviders {
     public static func openai(apiKey: String, model: String, baseURL: String? = nil) -> JSProvider? {
         var config: [String: Any] = ["apiKey": apiKey, "model": model]
         if let baseURL { config["baseURL"] = baseURL }
-        return JSProvider(
+        return cached(
             id: "openai-js", displayName: "OpenAI (JS)",
             providerJS: openaiJS, config: config)
+    }
+
+    /// Any OpenAI-compatible Chat Completions endpoint, in JavaScript (Mistral,
+    /// DeepSeek, Qwen, Z.AI, local servers…). `baseURL` must include the API
+    /// version path (e.g. `https://api.mistral.ai/v1`); `/chat/completions` is
+    /// appended.
+    public static func openaiCompatible(
+        id: String, displayName: String, apiKey: String, model: String, baseURL: String
+    ) -> JSProvider? {
+        cached(
+            id: id, displayName: displayName, providerJS: openaiJS,
+            config: ["apiKey": apiKey, "model": model, "baseURL": baseURL])
     }
 
     static let openaiJS = #"""
@@ -58,7 +96,8 @@ public enum JSProviders {
 
       async function chat(req, onEvent) {
         const cfg = req.config || {};
-        const base = (cfg.baseURL || "https://api.openai.com").replace(/\/+$/, "");
+        // baseURL includes the API version path (…/v1, …/v4); we append the route.
+        const base = (cfg.baseURL || "https://api.openai.com/v1").replace(/\/+$/, "");
         const body = { model: cfg.model, stream: true, messages: buildMessages(req.messages || []) };
         if (req.tools && req.tools.length) {
           body.tools = req.tools.map((t) => ({
@@ -69,7 +108,7 @@ public enum JSProviders {
 
         await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest();
-          xhr.open("POST", base + "/v1/chat/completions");
+          xhr.open("POST", base + "/chat/completions");
           xhr.setRequestHeader("content-type", "application/json");
           xhr.setRequestHeader("authorization", "Bearer " + (cfg.apiKey || ""));
 
