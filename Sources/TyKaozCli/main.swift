@@ -110,6 +110,8 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
         guard let url = URL(string: base), let model, !model.isEmpty else { return nil }
         return LocalOpenAIProvider(
             baseURL: url, apiKey: env["TYKAOZ_LOCAL_API_KEY"] ?? "", model: model)
+    case "apple":
+        return AppleIntelligenceProvider()
     default:
         return nil
     }
