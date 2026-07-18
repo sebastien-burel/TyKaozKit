@@ -32,10 +32,17 @@ let package = Package(
     platforms: [.macOS("26.0")],
     products: [
         .library(name: "TyKaozKit", targets: ["TyKaozKit"]),
+        // MLX local-inference providers, isolated so the base library and a
+        // headless CLI can opt out of the heavy MLX / transformers dependencies.
+        .library(name: "TyKaozKitMLX", targets: ["TyKaozKitMLX"]),
         .executable(name: "TyKaozCli", targets: ["TyKaozCli"]),
     ],
     dependencies: [
         .package(path: "../XSBridgeKit"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.31.4"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.3"),
+        .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
     ],
     targets: [
         // The XS host functions (absorbed from the former TyKaozHostC package).
@@ -58,10 +65,28 @@ let package = Package(
                 .enableUpcomingFeature("BareSlashRegexLiterals"),
             ]
         ),
-        // Headless runner for autonomous JS agents on top of TyKaozKit.
+        // MLX local-inference providers + on-device model management (moved
+        // from the app). Heavy deps live here only, behind the TyKaozKitMLX
+        // product, so plain TyKaozKit consumers don't pull them in.
+        .target(
+            name: "TyKaozKitMLX",
+            dependencies: [
+                "TyKaozKit",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXEmbedders", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
+        // Headless runner for autonomous JS agents. Depends on TyKaozKitMLX so
+        // it can run MLX (and Apple Intelligence) providers too.
         .executableTarget(
             name: "TyKaozCli",
-            dependencies: ["TyKaozKit"]
+            dependencies: ["TyKaozKit", "TyKaozKitMLX"]
         ),
     ]
 )

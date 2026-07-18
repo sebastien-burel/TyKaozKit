@@ -1,5 +1,6 @@
 import Foundation
 import TyKaozKit
+import TyKaozKitMLX
 
 // TyKaozCli — runs a standalone JavaScript agent headless on top of TyKaozKit.
 //
@@ -112,6 +113,9 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
             baseURL: url, apiKey: env["TYKAOZ_LOCAL_API_KEY"] ?? "", model: model)
     case "apple":
         return AppleIntelligenceProvider()
+    case "mlx":
+        guard let model, !model.isEmpty else { return nil }
+        return MLXLLMProvider(modelID: model)
     default:
         return nil
     }
