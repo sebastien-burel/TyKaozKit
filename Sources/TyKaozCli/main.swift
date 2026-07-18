@@ -47,6 +47,23 @@ if let probePath = popFlag("--http-eval") {
     exit(0)
 }
 
+// Multi-machine supervisor → sub-agent demo (Part D): a supervisor agent
+// delegates to a sub-agent over the service layer (service.run(input)).
+if let supIdx = args.firstIndex(of: "--supervise") {
+    args.remove(at: supIdx)
+    guard args.count >= 2,
+          let supSrc = try? String(contentsOf: URL(fileURLWithPath: args[0]), encoding: .utf8),
+          let subSrc = try? String(contentsOf: URL(fileURLWithPath: args[1]), encoding: .utf8) else {
+        die("usage: TyKaozCli --supervise <supervisor.js> <subagent.js> [--input JSON]")
+    }
+    let supInput = inputJSON.flatMap {
+        try? JSONSerialization.jsonObject(with: Data($0.utf8), options: [.fragmentsAllowed])
+    }
+    print(MultiAgent.superviseRun(
+        supervisor: supSrc, subAgent: subSrc, input: supInput, timeout: timeout) ?? "null")
+    exit(0)
+}
+
 guard let scriptPath = args.first else {
     die("""
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \
