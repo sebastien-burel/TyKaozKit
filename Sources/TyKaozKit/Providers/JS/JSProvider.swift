@@ -20,6 +20,7 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
     private let engine: XSEngine
     private let lock = NSLock()
     private var continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation?
+    private var callToken: UInt64 = 0
 
     public init?(id: String, displayName: String, providerJS: String, config: [String: Any]) {
         guard let engine = XSEngine() else { return nil }
@@ -51,17 +52,23 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             lock.lock()
-            // The engine is shared (cached) across chats of the same config, and
-            // its event channel isn't multiplexed — one chat at a time. A second
-            // concurrent chat fails loudly rather than corrupting the first.
+            // The cached engine serves one chat at a time; the factory hands out
+            // a fresh instance when busy, so this guard is a last resort.
             if self.continuation != nil {
                 lock.unlock()
-                continuation.finish(throwing: XSError(
-                    message: "JS provider busy — concurrent chats on a shared engine aren't supported"))
+                continuation.finish(throwing: XSError(message: "JS provider busy"))
                 return
             }
+            callToken &+= 1
+            let token = callToken
             self.continuation = continuation
             lock.unlock()
+
+            // Self-heal if the consumer cancels the stream before the JS side
+            // settles it — otherwise the shared instance would stay "busy".
+            continuation.onTermination = { [weak self] _ in
+                self?.clearContinuation(token: token)
+            }
 
             let request: [String: Any] = [
                 "messages": messages.map(Self.encode),
@@ -106,6 +113,14 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
     private func finishOnce(throwing error: Error?) {
         lock.lock(); let cont = continuation; continuation = nil; lock.unlock()
         if let error { cont?.finish(throwing: error) } else { cont?.finish() }
+    }
+
+    /// Clear the in-flight continuation on stream termination (cancellation),
+    /// but only if a newer chat hasn't already taken over (token guard).
+    private func clearContinuation(token: UInt64) {
+        lock.lock()
+        if token == callToken { continuation = nil }
+        lock.unlock()
     }
 
     // MARK: - Encoding
