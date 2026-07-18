@@ -7,7 +7,7 @@ import TyKaozHostC
 /// (`TyKaozHostC`) installs `host.*` functions that marshal arguments and hand
 /// `(bridge, id, json)` to the `@_cdecl` entry points below; each recovers this
 /// object from the bridge context and settles the call via `HostReply`
-/// (`xsBridgeComplete` / `xsBridgeEmitToken`). No `xsSlot` ever crosses into
+/// (`xsServiceResolve` / `xsServiceEmit`). No `xsSlot` ever crosses into
 /// Swift — only opaque ids and UTF-8 JSON.
 ///
 /// Concurrency: the entry points run on the engine's private XS thread. Work
@@ -215,9 +215,9 @@ extension XSEngine {
 public nonisolated struct HostReply {
     public let bridge: UnsafeMutableRawPointer
     public let id: UInt32
-    public func resolve(_ json: String) { json.withCString { xsBridgeComplete(bridge, id, 1, $0) } }
-    public func reject(_ json: String) { json.withCString { xsBridgeComplete(bridge, id, 0, $0) } }
-    public func emit(_ json: String) { json.withCString { xsBridgeEmitToken(bridge, id, $0) } }
+    public func resolve(_ json: String) { json.withCString { xsServiceResolve(bridge, id, $0) } }
+    public func reject(_ json: String) { json.withCString { xsServiceReject(bridge, id, $0) } }
+    public func emit(_ json: String) { json.withCString { xsServiceEmit(bridge, id, $0) } }
 }
 
 /// Recover the `TyKaozHost` a bridge points at (set via `xsBridgeSetContext`

@@ -2,9 +2,9 @@
  * serviceHost.c — client side of the multi-machine service layer for TyKaoz.
  *
  * Installs `__callService(method, args)` (which calls the socle's
- * xsBridgeServiceCall) plus a `globalThis.service` Proxy, so a supervisor agent
+ * xsServiceInvoke) plus a `globalThis.service` Proxy, so a supervisor agent
  * can call a sub-agent running on a linked machine as `service.run(input)`.
- * The target machine is set with xsBridgeLinkService (flat API).
+ * The target machine is set with xsServiceLink (flat API).
  */
 #include "xsAll.h"
 #include "xs.h"
@@ -15,7 +15,7 @@
 static void xs_call_service(xsMachine* the)
 {
     const char* method = xsToString(xsArg(0));
-    xsBridgeServiceCall(the, method, &xsArg(1));   /* xsResult = the promise */
+    xsServiceInvoke(the, method, &xsArg(1));   /* xsResult = the promise */
 }
 
 void xsBridgeServiceClientInstall(void* machine)

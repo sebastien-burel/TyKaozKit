@@ -3,8 +3,8 @@ import XSBridge
 
 /// Swift side of the native `__http` primitive (installed by TyKaozHostC). It
 /// performs the request off the XS thread, streams each response chunk back
-/// through the reverse channel (`xsBridgeEmitToken` → the JS `onChunk`), and
-/// settles with `{status, headers}` via `xsBridgeComplete`. Stateless: the
+/// through the reverse channel (`xsServiceEmit` → the JS `onChunk`), and
+/// settles with `{status, headers}` via `xsServiceResolve`. Stateless: the
 /// request is fully described by the JSON, so no bridge context is needed.
 enum HttpHost {
 
@@ -62,17 +62,21 @@ enum HttpHost {
     // MARK: - Settling helpers
 
     private static func emit(_ bridge: UnsafeMutableRawPointer, _ id: UInt32, chunk: String) {
-        jsonString(chunk).withCString { xsBridgeEmitToken(bridge, id, $0) }
+        jsonString(chunk).withCString { xsServiceEmit(bridge, id, $0) }
     }
 
     private static func complete(_ bridge: UnsafeMutableRawPointer, _ id: UInt32,
                                  ok: Bool, jsonObject: [String: Any]) {
-        (jsonEncode(jsonObject) ?? "{}").withCString { xsBridgeComplete(bridge, id, ok ? 1 : 0, $0) }
+        (jsonEncode(jsonObject) ?? "{}").withCString {
+            ok ? xsServiceResolve(bridge, id, $0) : xsServiceReject(bridge, id, $0)
+        }
     }
 
     private static func complete(_ bridge: UnsafeMutableRawPointer, _ id: UInt32,
                                  ok: Bool, jsonValue: String) {
-        jsonString(jsonValue).withCString { xsBridgeComplete(bridge, id, ok ? 1 : 0, $0) }
+        jsonString(jsonValue).withCString {
+            ok ? xsServiceResolve(bridge, id, $0) : xsServiceReject(bridge, id, $0)
+        }
     }
 
     /// JSON-encode a String as a JSON string literal (the JS side JSON.parses it).

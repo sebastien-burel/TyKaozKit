@@ -3,8 +3,8 @@
  *
  * Written against the classic xs.h API (pattern: XSBridgeKit's xsBridgeCliC).
  * Each host function marshals its arguments to plain C and calls a Swift
- * @_cdecl counterpart; async ones create their Promise via xsBridgePromise and
- * are settled later with xsBridgeComplete / xsBridgeEmitToken. The Swift host
+ * @_cdecl counterpart; async ones create their Promise via xsServicePromise and
+ * are settled later with xsServiceResolve / xsServiceEmit. The Swift host
  * object is recovered from the bridge context (xsBridgeGetContext), which
  * TyKaoz sets to its host pointer after install.
  *
@@ -35,7 +35,7 @@ extern void xsbTyToolResult(void* bridge, const char* json);
 
 /* JSON.stringify([xsArg(0..n-1)]) as a malloc'd string — the positional params
  * array Swift expects (AgentJSON.params). Uses xsResult as scratch, so call it
- * BEFORE xsBridgePromise. */
+ * BEFORE xsServicePromise. */
 static char* ty_args_json(xsMachine* the, int n)
 {
     xsResult = xsNewArray(n);
@@ -92,7 +92,7 @@ static void xs_ty_chat(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
     char* json = ty_args_json(the, 2);            /* [messages, tools] */
-    uint32_t id = xsBridgePromise(the, &xsArg(2)); /* roots onToken */
+    uint32_t id = xsServicePromise(the, &xsArg(2)); /* roots onToken */
     xsbTyChat(bridge, id, json);
     free(json);
 }
@@ -101,7 +101,7 @@ static void xs_ty_chat(xsMachine* the)
 static void xs_ty_tool_list(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
-    uint32_t id = xsBridgePromise(the, NULL);
+    uint32_t id = xsServicePromise(the, NULL);
     xsbTyToolList(bridge, id);
 }
 
@@ -110,7 +110,7 @@ static void xs_ty_tool_call(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
     char* json = ty_args_json(the, 2);
-    uint32_t id = xsBridgePromise(the, NULL);
+    uint32_t id = xsServicePromise(the, NULL);
     xsbTyToolCall(bridge, id, json);
     free(json);
 }
@@ -120,7 +120,7 @@ static void xs_ty_memory_save(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
     char* json = ty_args_json(the, 2);
-    uint32_t id = xsBridgePromise(the, NULL);
+    uint32_t id = xsServicePromise(the, NULL);
     xsbTyMemorySave(bridge, id, json);
     free(json);
 }
@@ -130,7 +130,7 @@ static void xs_ty_memory_read(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
     char* json = ty_args_json(the, 1);
-    uint32_t id = xsBridgePromise(the, NULL);
+    uint32_t id = xsServicePromise(the, NULL);
     xsbTyMemoryRead(bridge, id, json);
     free(json);
 }
@@ -139,7 +139,7 @@ static void xs_ty_memory_read(xsMachine* the)
 static void xs_ty_memory_list(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
-    uint32_t id = xsBridgePromise(the, NULL);
+    uint32_t id = xsServicePromise(the, NULL);
     xsbTyMemoryList(bridge, id);
 }
 
