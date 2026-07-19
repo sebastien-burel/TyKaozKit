@@ -59,6 +59,9 @@ let package = Package(
                 .product(name: "XSBridge", package: "XSBridgeKit"),
                 "TyKaozHostC",
             ],
+            // JS-first runtime code lives as real ES modules, loaded at run time
+            // from the bundle (Bundle.module) — see Resources/js/.
+            resources: [.copy("Resources/js")],
             swiftSettings: [
                 // Providers use bare `/.../` regex literals (matches the app's
                 // SWIFT_ENABLE_BARE_SLASH_REGEX setting).

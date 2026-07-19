@@ -5,12 +5,13 @@ import TyKaozHostC
 
 /// An `LLMProvider` whose logic is written in JavaScript. It owns a dedicated XS
 /// engine with the native `__http` primitive + the JS→Swift event channel
-/// installed, evals the `XMLHttpRequest` shim, the provider module (which sets
-/// `globalThis.tyProvider = { chat(request, onEvent) }`) and the orchestrator,
-/// then maps the provider's emitted events into `StreamEvent`s. This is how
-/// external HTTP+SSE providers move off Swift and into JavaScript (JS-first),
-/// while the app and the agent runtime keep consuming the plain `LLMProvider`
-/// interface (mirrors how `JSToolBundle` adapts JS tools to `Tool`).
+/// installed, imports a bundled provider ES module (whose default export is
+/// `{ chat(request, onEvent) }` and which pulls in the `XMLHttpRequest` shim
+/// module) as `globalThis.tyProvider` plus the orchestrator module, then maps
+/// the provider's emitted events into `StreamEvent`s. This is how external
+/// HTTP+SSE providers move off Swift and into JavaScript (JS-first), while the
+/// app and the agent runtime keep consuming the plain `LLMProvider` interface
+/// (mirrors how `JSToolBundle` adapts JS tools to `Tool`).
 public final class JSProvider: LLMProvider, @unchecked Sendable {
 
     public let id: String
@@ -22,8 +23,14 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
     private var continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation?
     private var callToken: UInt64 = 0
 
-    public init?(id: String, displayName: String, providerJS: String, config: [String: Any]) {
-        guard let engine = XSEngine() else { return nil }
+    /// - Parameter providerModule: the base name of a bundled provider ES module
+    ///   in `Resources/js` (e.g. `"anthropic"`). It sets `tyProvider` (via its
+    ///   default export) and pulls in the XMLHttpRequest shim itself.
+    public init?(id: String, displayName: String, providerModule: String, config: [String: Any]) {
+        guard let engine = XSEngine(),
+              let providerPath = JSResource.path(providerModule),
+              let orchestratorPath = JSResource.path("provider-orchestrator")
+        else { return nil }
         self.id = id
         self.displayName = displayName
         self.config = config
@@ -35,9 +42,19 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
             xsBridgeJSProviderInstall(machine)
             xsBridgeSetContext(machine, ptr)
         }
-        guard (try? engine.eval(JSRuntime.xmlHttpRequestShim)) != nil,
-              (try? engine.eval(providerJS)) != nil,
-              (try? engine.eval(JSRuntime.providerOrchestrator)) != nil
+        // Dynamic import resolves within eval's promise-drain, so tyProvider and
+        // __runProviderChat are set by the time this returns.
+        let bootstrap = """
+        globalThis.__ready = (async function () {
+            const m = await import(\(AgentJSON.jsLiteral(providerPath)));
+            globalThis.tyProvider = m.default;
+            await import(\(AgentJSON.jsLiteral(orchestratorPath)));
+        })();
+        """
+        guard (try? engine.eval(bootstrap)) != nil,
+              (try? engine.eval(
+                "typeof globalThis.__runProviderChat === 'function' "
+                + "&& !!globalThis.tyProvider")) == "true"
         else { return nil }
     }
 

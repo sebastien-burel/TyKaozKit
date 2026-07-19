@@ -204,7 +204,12 @@ extension XSEngine {
             xsBridgeTyKaozInstall(machine)
             xsBridgeSetContext(machine, hostPtr)
         }
-        _ = try? engine.eval(AgentOrchestrator.js)
+        // The agent orchestrator ships as a bundled ES module; importing it
+        // (side effect) wires host.llm / __runAgent / __callTool. The dynamic
+        // import resolves within eval's drain.
+        if let orchestratorImport = JSResource.importStatement("agent-orchestrator") {
+            _ = try? engine.eval(orchestratorImport)
+        }
         return engine
     }
 }
