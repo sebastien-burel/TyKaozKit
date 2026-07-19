@@ -46,11 +46,14 @@ public nonisolated final class AgentRuntime {
 
     /// - Parameter libraryRoot: folder whose `.js` files the agent may `import`
     ///   with explicit relative specifiers (`./util.js`); nil disables imports.
+    /// - Parameter moduleBase: directory a relative `new Service(t, "./sub.mjs")`
+    ///   specifier resolves against (typically the agent script's own folder).
     public func run(
         script: String,
         input: Any? = nil,
         timeout: TimeInterval = 10,
-        libraryRoot: URL? = nil
+        libraryRoot: URL? = nil,
+        moduleBase: URL? = nil
     ) async throws -> String {
         let staging = try AgentModuleStaging(agentSource: script, libraryRoot: libraryRoot)
         // Enable JS-initiated spawn: a script may `new Thread()` + `new Service()`
@@ -61,7 +64,8 @@ public nonisolated final class AgentRuntime {
         let host = TyKaozHost(
             makeProvider: makeProvider, tools: tools, memory: memory, log: log)
         return try await withCheckedThrowingContinuation { continuation in
-            let session = AgentSession(host: host, staging: staging, continuation: continuation)
+            let session = AgentSession(
+                host: host, staging: staging, moduleBase: moduleBase, continuation: continuation)
             session.start(input: input, timeout: timeout)
         }
     }
@@ -74,16 +78,18 @@ private nonisolated final class AgentSession {
 
     private let host: TyKaozHost
     private let staging: AgentModuleStaging
+    private let moduleBase: URL?
     private var engine: XSEngine?
     private var continuation: CheckedContinuation<String, Error>?
     private var selfRef: AgentSession?
     private var timeoutItem: DispatchWorkItem?
     private let lock = NSLock()
 
-    init(host: TyKaozHost, staging: AgentModuleStaging,
+    init(host: TyKaozHost, staging: AgentModuleStaging, moduleBase: URL?,
          continuation: CheckedContinuation<String, Error>) {
         self.host = host
         self.staging = staging
+        self.moduleBase = moduleBase
         self.continuation = continuation
     }
 
@@ -105,6 +111,9 @@ private nonisolated final class AgentSession {
         }
         self.engine = engine
         engine.installThreads()   // `Thread` / `Service` globals for JS-initiated spawn
+        if let base = moduleBase {
+            _ = try? engine.eval("globalThis.__moduleBase = \(AgentJSON.jsLiteral(base.path))")
+        }
 
         do {
             // The staged agent runs in module goal (dynamic import in __runAgent),

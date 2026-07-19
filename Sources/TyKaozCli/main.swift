@@ -162,7 +162,10 @@ do {
         script: script,
         input: input,
         timeout: timeout,
-        libraryRoot: libraryDir.map { URL(fileURLWithPath: $0) })
+        libraryRoot: libraryDir.map { URL(fileURLWithPath: $0) },
+        // Relative `new Service(t, "./sub.mjs")` specifiers resolve against the
+        // agent script's own directory.
+        moduleBase: URL(fileURLWithPath: scriptPath).deletingLastPathComponent())
     print(result)
 } catch {
     die("error: \(error.localizedDescription)")
