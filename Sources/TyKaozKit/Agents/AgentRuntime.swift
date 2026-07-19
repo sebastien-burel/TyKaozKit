@@ -53,6 +53,11 @@ public nonisolated final class AgentRuntime {
         libraryRoot: URL? = nil
     ) async throws -> String {
         let staging = try AgentModuleStaging(agentSource: script, libraryRoot: libraryRoot)
+        // Enable JS-initiated spawn: a script may `new Thread()` + `new Service()`
+        // to run sub-agents, each a child engine with this same host wiring.
+        TyKaozThreads.register { [makeProvider, tools, memory, log] in
+            TyKaozHost(makeProvider: makeProvider, tools: tools, memory: memory, log: log)
+        }
         let host = TyKaozHost(
             makeProvider: makeProvider, tools: tools, memory: memory, log: log)
         return try await withCheckedThrowingContinuation { continuation in
@@ -99,6 +104,7 @@ private nonisolated final class AgentSession {
             return
         }
         self.engine = engine
+        engine.installThreads()   // `Thread` / `Service` globals for JS-initiated spawn
 
         do {
             // The staged agent runs in module goal (dynamic import in __runAgent),
