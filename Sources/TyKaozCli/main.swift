@@ -6,7 +6,7 @@ import TyKaozKitMLX
 //
 // Usage:
 //   TyKaozCli <agent.js> [--provider anthropic|local] [--model M]
-//             [--input JSON] [--library DIR] [--timeout SEC]
+//             [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...]
 //
 // Provider config comes from the environment:
 //   anthropic: ANTHROPIC_API_KEY (+ --model / TYKAOZ_MODEL)
@@ -31,12 +31,26 @@ func popFlag(_ name: String) -> String? {
     args.removeSubrange(i...(i + 1))
     return value
 }
+/// Collect every occurrence of a repeatable flag (e.g. `--root A --root B`).
+func popFlagAll(_ name: String) -> [String] {
+    var values: [String] = []
+    while let value = popFlag(name) { values.append(value) }
+    return values
+}
 
 let providerName = popFlag("--provider") ?? "anthropic"
 let model = popFlag("--model") ?? ProcessInfo.processInfo.environment["TYKAOZ_MODEL"]
 let inputJSON = popFlag("--input")
 let libraryDir = popFlag("--library")
 let timeout = TimeInterval(popFlag("--timeout") ?? "") ?? 60
+
+// File-space tools: each `--root DIR` authorises a folder the agent may read.
+// The CLI has no sandbox, so an AuthorizedRoot is a plain directory URL (the
+// tools' security-scoped bracketing is a no-op on non-scoped URLs).
+let fileRoots: [AuthorizedRoot] = popFlagAll("--root").map { path in
+    let url = URL(fileURLWithPath: path, isDirectory: true)
+    return AuthorizedRoot(name: url.lastPathComponent, url: url)
+}
 
 // Dev harness for the native __http primitive + XMLHttpRequest shim (C1): runs
 // a bare engine (no provider/LLM) and prints the JSON on `globalThis.__result`.
@@ -68,7 +82,7 @@ if let supIdx = args.firstIndex(of: "--supervise") {
 guard let scriptPath = args.first else {
     die("""
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \
-        [--input JSON] [--library DIR] [--timeout SEC]
+        [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...]
         """, code: 2)
 }
 
@@ -136,6 +150,11 @@ var tools: [any Tool] = [
 ]
 if let brave = env["BRAVE_API_KEY"], !brave.isEmpty {
     tools.append(BraveSearchTool(apiKey: brave))
+}
+if !fileRoots.isEmpty {
+    tools.append(ListDirectoryTool(roots: fileRoots))
+    tools.append(ReadFileTool(roots: fileRoots))
+    tools.append(GrepFilesTool(roots: fileRoots))
 }
 let registry = ToolRegistry(tools: tools)
 
