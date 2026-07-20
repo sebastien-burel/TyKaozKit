@@ -22,13 +22,15 @@ export default {
     additionalProperties: false,
   },
   async run(args) {
-    const key = (globalThis.__toolConfig && globalThis.__toolConfig.braveApiKey) || "";
+    const cfg = globalThis.__toolConfig || {};
+    const key = (cfg.braveApiKey || "").trim();
     if (!key) throw new Error("clé API Brave manquante (réglages → Outils)");
     const query = String((args && args.query) || "").trim();
     if (!query) throw new Error("query ne peut pas être vide");
     const count = Math.min(Math.max((args && args.count) || 5, 1), 20);
 
-    const url = "https://api.search.brave.com/res/v1/web/search?q="
+    const base = (cfg.braveBaseURL || "https://api.search.brave.com").replace(/\/+$/, "");
+    const url = base + "/res/v1/web/search?q="
       + encodeURIComponent(query) + "&count=" + count;
     const res = await httpGet(url, {
       "Accept": "application/json",

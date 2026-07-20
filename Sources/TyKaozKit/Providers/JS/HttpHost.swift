@@ -30,7 +30,16 @@ enum HttpHost {
         var request = URLRequest(url: url)
         request.httpMethod = (obj["method"] as? String)?.uppercased() ?? "GET"
         if let headers = obj["headers"] as? [String: String] {
-            for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+            for (key, value) in headers {
+                // Sanitize the value: trim surrounding whitespace (HTTP OWS, and
+                // a common paste artefact) and drop any embedded CR/LF — a stray
+                // newline in a pasted API key otherwise makes URLSession silently
+                // drop the whole header (e.g. Brave's X-Subscription-Token → 422).
+                let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\r", with: "")
+                    .replacingOccurrences(of: "\n", with: "")
+                request.setValue(clean, forHTTPHeaderField: key)
+            }
         }
         if let body = obj["body"] as? String, !body.isEmpty {
             request.httpBody = Data(body.utf8)

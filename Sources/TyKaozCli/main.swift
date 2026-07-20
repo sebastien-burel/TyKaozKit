@@ -150,6 +150,7 @@ var toolConfig: [String: Any] = [:]
 if let brave = env["BRAVE_API_KEY"], !brave.isEmpty {
     jsToolNames.append("web-search")
     toolConfig["braveApiKey"] = brave
+    if let base = env["BRAVE_BASE_URL"], !base.isEmpty { toolConfig["braveBaseURL"] = base }
 }
 if let jsTools = JSToolBundle(
     toolModules: jsToolNames, config: toolConfig,
