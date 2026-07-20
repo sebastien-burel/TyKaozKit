@@ -1,5 +1,6 @@
 import Foundation
 import XSBridgeKit
+import XSBridge   // xsBridgeAddModuleRoot / xsBridgeClearModuleRoots (module roots)
 
 public enum AgentError: Error, LocalizedError {
     case engineCreationFailed
@@ -65,7 +66,36 @@ public nonisolated final class AgentRuntime {
             makeProvider: makeProvider, tools: tools, memory: memory, log: log)
         return try await withCheckedThrowingContinuation { continuation in
             let session = AgentSession(
-                host: host, staging: staging, moduleBase: moduleBase, continuation: continuation)
+                host: host, entry: staging.agentPath, staging: staging,
+                moduleBase: moduleBase, continuation: continuation)
+            session.start(input: input, timeout: timeout)
+        }
+    }
+
+    /// Run an agent the Moddable way: no staging temp copy — the agent and its
+    /// modules are imported directly from disk, resolved against `roots`.
+    ///
+    /// - Parameter entryModule: bare specifier for the agent, resolved against
+    ///   the default (`""`) root — typically the script's filename without
+    ///   extension (`"agent"` → `<root>/agent.{xsb,mjs,js}`).
+    /// - Parameter roots: process-wide module roots. `""` prefix = a default
+    ///   root for bare specifiers (searched in order); a named prefix maps
+    ///   `<prefix>/x` to that dir. Resolution is confined to the roots (no
+    ///   `../` escape). Registered for the run, cleared when it ends.
+    public func runRooted(
+        entryModule: String,
+        roots: [(prefix: String, dir: String)],
+        input: Any? = nil,
+        timeout: TimeInterval = 10
+    ) async throws -> String {
+        TyKaozThreads.register { [makeProvider, tools, memory, log] in
+            TyKaozHost(makeProvider: makeProvider, tools: tools, memory: memory, log: log)
+        }
+        let host = TyKaozHost(
+            makeProvider: makeProvider, tools: tools, memory: memory, log: log)
+        return try await withCheckedThrowingContinuation { continuation in
+            let session = AgentSession(
+                host: host, entry: entryModule, roots: roots, continuation: continuation)
             session.start(input: input, timeout: timeout)
         }
     }
@@ -77,7 +107,14 @@ public nonisolated final class AgentRuntime {
 private nonisolated final class AgentSession {
 
     private let host: TyKaozHost
-    private let staging: AgentModuleStaging
+    /// The specifier handed to `__runAgent`: a staged absolute path (staged
+    /// mode) or a bare module name resolved against `roots` (rooted mode).
+    private let entry: String
+    /// Non-nil in staged mode — the temp dir to clean up after the run.
+    private let staging: AgentModuleStaging?
+    /// Non-nil in rooted mode — process-wide module roots to register on start
+    /// and clear on completion. `""` prefix = default root for bare specifiers.
+    private let roots: [(prefix: String, dir: String)]?
     private let moduleBase: URL?
     private var engine: XSEngine?
     private var continuation: CheckedContinuation<String, Error>?
@@ -85,10 +122,15 @@ private nonisolated final class AgentSession {
     private var timeoutItem: DispatchWorkItem?
     private let lock = NSLock()
 
-    init(host: TyKaozHost, staging: AgentModuleStaging, moduleBase: URL?,
+    init(host: TyKaozHost, entry: String,
+         staging: AgentModuleStaging? = nil,
+         roots: [(prefix: String, dir: String)]? = nil,
+         moduleBase: URL? = nil,
          continuation: CheckedContinuation<String, Error>) {
         self.host = host
+        self.entry = entry
         self.staging = staging
+        self.roots = roots
         self.moduleBase = moduleBase
         self.continuation = continuation
     }
@@ -111,16 +153,26 @@ private nonisolated final class AgentSession {
         }
         self.engine = engine
         engine.installThreads()   // `Thread` / `Service` globals for JS-initiated spawn
+        // Rooted mode: register process-wide module roots so the agent (and its
+        // sub-agents, which share the process-wide registry) resolve bare
+        // specifiers against them, confined to the roots. Registered here on the
+        // XS thread, before any import; cleared in `complete`.
+        if let roots {
+            engine.withMachine { _ in
+                xsBridgeClearModuleRoots()
+                for root in roots { xsBridgeAddModuleRoot(root.prefix, root.dir) }
+            }
+        }
         if let base = moduleBase {
             _ = try? engine.eval("globalThis.__moduleBase = \(AgentJSON.jsLiteral(base.path))")
         }
 
         do {
-            // The staged agent runs in module goal (dynamic import in __runAgent),
-            // so it can use static `import ... from`.
+            // The agent runs in module goal (dynamic import in __runAgent), so it
+            // can use static `import ... from`.
             let inputJSON = AgentJSON.string(input ?? NSNull())
             _ = try engine.eval(
-                "__runAgent(\(AgentJSON.jsLiteral(staging.agentPath)), "
+                "__runAgent(\(AgentJSON.jsLiteral(entry)), "
                 + "\(AgentJSON.jsLiteral(inputJSON)))")
         } catch let error as XSError {
             complete(.failure(AgentError.evaluation(error.message)))
@@ -145,18 +197,22 @@ private nonisolated final class AgentSession {
         host.onFail = nil
 
         let staging = self.staging
+        let clearRoots = self.roots != nil
         // Release the engine off the XS thread (its deinit joins that thread,
         // which would deadlock if we're on it now — __report fires there). Drain
         // the run loop so the reporting call settles before the machine is
-        // deleted, then drop the last reference and clean up the staging dir.
+        // deleted, then clear any process-wide roots this run registered, drop
+        // the last reference, and clean up the staging dir.
         if let engine {
             DispatchQueue.global().async {
                 engine.runUntilIdle(timeout: 2)
+                if clearRoots { engine.withMachine { _ in xsBridgeClearModuleRoots() } }
                 withExtendedLifetime(engine) {}
-                staging.cleanup()
+                staging?.cleanup()
             }
         } else {
-            staging.cleanup()
+            if clearRoots { xsBridgeClearModuleRoots() }
+            staging?.cleanup()
         }
         selfRef = nil
     }
