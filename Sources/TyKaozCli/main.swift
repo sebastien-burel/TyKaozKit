@@ -107,6 +107,11 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
             return nil
         }
         return JSProviders.google(apiKey: key, model: model, baseURL: env["GOOGLE_BASE_URL"])
+    case "js-kimi":
+        guard let key = env["MOONSHOT_API_KEY"] ?? env["KIMI_API_KEY"], !key.isEmpty else {
+            return nil
+        }
+        return JSProviders.kimi(apiKey: key, model: model ?? "kimi-k3", baseURL: env["KIMI_BASE_URL"])
     case "local":
         let base = env["TYKAOZ_LOCAL_BASE_URL"] ?? "http://localhost:1234/v1"
         guard let url = URL(string: base), let model, !model.isEmpty else { return nil }

@@ -79,6 +79,15 @@ public enum JSProviders {
             config: ["apiKey": "", "model": model, "baseURL": baseURL])
     }
 
+    /// Kimi K3 (Moonshot AI) — OpenAI-compatible Chat Completions, so it reuses
+    /// the `openai` module. Default endpoint https://api.moonshot.ai/v1; the
+    /// stream carries both `content` and `reasoning_content` deltas.
+    public static func kimi(apiKey: String, model: String = "kimi-k3", baseURL: String? = nil) -> JSProvider? {
+        openaiCompatible(
+            id: "kimi-js", displayName: "Kimi (JS)", apiKey: apiKey, model: model,
+            baseURL: baseURL ?? "https://api.moonshot.ai/v1")
+    }
+
     /// Google Gemini's `:streamGenerateContent?alt=sse` in JavaScript. `baseURL`
     /// defaults to the v1beta endpoint. The API key goes in `x-goog-api-key`.
     public static func google(apiKey: String, model: String, baseURL: String? = nil) -> JSProvider? {
