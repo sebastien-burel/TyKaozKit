@@ -8,13 +8,28 @@ globalThis.XMLHttpRequest = class XMLHttpRequest {
   constructor() {
     this.readyState = 0;
     this.status = 0;
-    this.responseText = "";
+    // Body pieces kept as an array, not a growing string: appending is O(1) and
+    // there is no per-chunk full-body copy. `responseText` joins lazily (once,
+    // for whole-body consumers); streaming parsers should call `readChunk()`.
+    this._chunks = [];
+    this._readIndex = 0;
     this._headers = {};
     this._responseHeaders = {};
     this.onprogress = null;
     this.onload = null;
     this.onerror = null;
     this.onreadystatechange = null;
+  }
+  // Full body received so far. O(total) — calling it per progress event would
+  // be O(N²); a streaming parser should use `readChunk()` instead.
+  get responseText() { return this._chunks.join(""); }
+  // The text received since the previous call — O(delta). Lets an SSE parser
+  // consume the stream incrementally without re-reading the whole body.
+  readChunk() {
+    if (this._readIndex >= this._chunks.length) return "";
+    const parts = this._chunks.slice(this._readIndex);
+    this._readIndex = this._chunks.length;
+    return parts.join("");
   }
   _setState(s) {
     this.readyState = s;
@@ -45,7 +60,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest {
       body: body == null ? null : String(body),
     };
     __http(req, (chunk) => {
-      this.responseText += chunk;
+      this._chunks.push(chunk);
       this._setState(3);
       if (this.onprogress) this.onprogress();
     }).then((res) => {

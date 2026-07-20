@@ -42,7 +42,7 @@ async function chat(req, onEvent) {
     xhr.open("POST", base + "/api/chat");
     xhr.setRequestHeader("content-type", "application/json");
 
-    let cursor = 0, buffer = "";
+    let buffer = "";
     let counter = 0;
     function processLine(raw) {
       const line = raw.trim();
@@ -64,8 +64,7 @@ async function chat(req, onEvent) {
     }
 
     xhr.onprogress = () => {
-      buffer += xhr.responseText.slice(cursor);
-      cursor = xhr.responseText.length;
+      buffer += xhr.readChunk();
       let idx;
       while ((idx = buffer.indexOf("\n")) >= 0) {
         processLine(buffer.slice(0, idx));

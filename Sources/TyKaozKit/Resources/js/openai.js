@@ -46,7 +46,7 @@ async function chat(req, onEvent) {
     xhr.setRequestHeader("content-type", "application/json");
     xhr.setRequestHeader("authorization", "Bearer " + (cfg.apiKey || ""));
 
-    let cursor = 0, buffer = "";
+    let buffer = "";
     const toolCalls = {};
 
     function flushTools() {
@@ -83,8 +83,7 @@ async function chat(req, onEvent) {
     }
 
     xhr.onprogress = () => {
-      buffer += xhr.responseText.slice(cursor);
-      cursor = xhr.responseText.length;
+      buffer += xhr.readChunk();
       let idx;
       while ((idx = buffer.indexOf("\n")) >= 0) {
         processLine(buffer.slice(0, idx));

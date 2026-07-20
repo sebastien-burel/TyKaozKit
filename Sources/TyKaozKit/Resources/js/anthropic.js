@@ -61,7 +61,6 @@ async function chat(req, onEvent) {
     xhr.setRequestHeader("x-api-key", cfg.apiKey || "");
     xhr.setRequestHeader("anthropic-version", "2023-06-01");
 
-    let cursor = 0;
     let buffer = "";
     const toolBlocks = {};
 
@@ -95,8 +94,7 @@ async function chat(req, onEvent) {
     }
 
     xhr.onprogress = () => {
-      buffer += xhr.responseText.slice(cursor);
-      cursor = xhr.responseText.length;
+      buffer += xhr.readChunk();
       let idx;
       while ((idx = buffer.indexOf("\n")) >= 0) {
         processLine(buffer.slice(0, idx));

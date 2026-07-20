@@ -71,7 +71,7 @@ async function chat(req, onEvent) {
     xhr.setRequestHeader("content-type", "application/json");
     xhr.setRequestHeader("x-goog-api-key", cfg.apiKey || "");
 
-    let cursor = 0, buffer = "", counter = 0;
+    let buffer = "", counter = 0;
     function processLine(raw) {
       const line = raw.replace(/\r$/, "");
       if (!line.startsWith("data:")) return;
@@ -92,8 +92,7 @@ async function chat(req, onEvent) {
       }
     }
     xhr.onprogress = () => {
-      buffer += xhr.responseText.slice(cursor);
-      cursor = xhr.responseText.length;
+      buffer += xhr.readChunk();
       let idx;
       while ((idx = buffer.indexOf("\n")) >= 0) {
         processLine(buffer.slice(0, idx));
