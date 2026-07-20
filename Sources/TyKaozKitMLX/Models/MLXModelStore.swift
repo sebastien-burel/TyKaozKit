@@ -364,12 +364,26 @@ public final class MLXModelStore {
     /// `CacheLocationProvider.defaultCacheDirectory()` sandboxed
     /// branch (kind: `<cachesDirectory>/huggingface/hub/`).
     public func hubCacheRoot() -> URL? {
-        // URL.cachesDirectory is the same value the upstream provider
-        // consults, so the two paths stay in sync without us having
-        // to ask the HubClient instance directly.
-        URL.cachesDirectory
+        // swift-huggingface resolves the hub cache differently by environment:
+        // the sandboxed app lands under `URL.cachesDirectory` (~/Library/
+        // Containers/<id>/Data/Library/Caches/huggingface/hub), while an
+        // unsandboxed build (e.g. TyKaozCli) uses `~/.cache/huggingface/hub`.
+        // Return whichever actually holds the cache so both work; fall back to
+        // the sandbox location for a first download.
+        var candidates: [URL] = []
+        if let hfHome = ProcessInfo.processInfo.environment["HF_HOME"], !hfHome.isEmpty {
+            candidates.append(URL(fileURLWithPath: hfHome, isDirectory: true)
+                .appendingPathComponent("hub", isDirectory: true))
+        }
+        candidates.append(URL.cachesDirectory
             .appendingPathComponent("huggingface", isDirectory: true)
-            .appendingPathComponent("hub", isDirectory: true)
+            .appendingPathComponent("hub", isDirectory: true))
+        candidates.append(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true))
+        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        return candidates.first
     }
 
     // MARK: - Helpers
