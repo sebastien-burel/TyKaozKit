@@ -7,6 +7,12 @@ import TyKaozKitMLX
 // Usage:
 //   TyKaozCli <agent.js> [--provider anthropic|local] [--model M]
 //             [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...]
+//             [--modules nom=dir ...]
+//
+// Modules resolve Moddable-style: the agent's own directory is the default
+// root, so `import "sub-agent"` (no `./`, no extension — `.xsb`/`.mjs`/`.js`
+// searched) finds a sibling. `--modules nom=dir` adds a named root
+// (`import "nom/x"`). Resolution is confined to the roots.
 //
 // Provider config comes from the environment:
 //   anthropic: ANTHROPIC_API_KEY (+ --model / TYKAOZ_MODEL)
@@ -44,6 +50,15 @@ let inputJSON = popFlag("--input")
 let libraryDir = popFlag("--library")
 let timeout = TimeInterval(popFlag("--timeout") ?? "") ?? 60
 
+// Module roots (Moddable-style): named external roots the agent imports from
+// with `import "nom/module"`. Each `--modules nom=dir` maps a prefix to a dir;
+// the agent's own directory is always the default root (registered below).
+let namedModuleRoots: [(prefix: String, dir: String)] = popFlagAll("--modules").compactMap {
+    guard let eq = $0.firstIndex(of: "=") else { return nil }
+    let dir = String($0[$0.index(after: eq)...])
+    return (String($0[..<eq]), URL(fileURLWithPath: dir, isDirectory: true).path)
+}
+
 // File-space tools: each `--root DIR` authorises a folder the agent may read.
 // The CLI has no sandbox, so an AuthorizedRoot is a plain directory URL (the
 // tools' security-scoped bracketing is a no-op on non-scoped URLs).
@@ -62,18 +77,20 @@ if let probePath = popFlag("--http-eval") {
     exit(0)
 }
 
-// Multi-agent runs are now initiated from the script itself: an agent calls
-// `new Thread()` + `new Service(thread, "/abs/sub.mjs")` and `await`s the
-// sub-agent's default-export methods (see AgentRuntime / TyKaozThreads).
+// Multi-agent runs are initiated from the script itself: an agent calls
+// `new Thread()` + `new Service(thread, "sub-agent")` and `await`s the
+// sub-agent's default-export methods (see AgentRuntime / TyKaozThreads). The
+// sub-agent module resolves against the process-wide roots, like any import.
 
 guard let scriptPath = args.first else {
     die("""
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \
-        [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...]
+        [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...] \
+        [--modules nom=dir ...]
         """, code: 2)
 }
 
-guard let script = try? String(contentsOf: URL(fileURLWithPath: scriptPath), encoding: .utf8) else {
+guard FileManager.default.isReadableFile(atPath: scriptPath) else {
     die("error: cannot read agent script at \(scriptPath)")
 }
 
@@ -173,15 +190,27 @@ let input: Any? = inputJSON.flatMap {
     try? JSONSerialization.jsonObject(with: Data($0.utf8), options: [.fragmentsAllowed])
 }
 
+// Module roots (Moddable-style): the agent's own directory is the default
+// root, so `import "sub-agent"` finds a sibling `sub-agent.{xsb,mjs,js}`; a
+// `new Service(t, "sub-agent")` sub-agent resolves the same way (roots are
+// process-wide). `--library DIR` adds another default root; `--modules nom=dir`
+// adds named roots (`import "nom/x"`). Resolution is confined to the roots.
+let scriptURL = URL(fileURLWithPath: scriptPath)
+let entryModule = scriptURL.deletingPathExtension().lastPathComponent
+var moduleRoots: [(prefix: String, dir: String)] = [
+    ("", scriptURL.deletingLastPathComponent().path)
+]
+if let libraryDir {
+    moduleRoots.append(("", URL(fileURLWithPath: libraryDir, isDirectory: true).path))
+}
+moduleRoots.append(contentsOf: namedModuleRoots)
+
 do {
-    let result = try await runtime.run(
-        script: script,
+    let result = try await runtime.runRooted(
+        entryModule: entryModule,
+        roots: moduleRoots,
         input: input,
-        timeout: timeout,
-        libraryRoot: libraryDir.map { URL(fileURLWithPath: $0) },
-        // Relative `new Service(t, "./sub.mjs")` specifiers resolve against the
-        // agent script's own directory.
-        moduleBase: URL(fileURLWithPath: scriptPath).deletingLastPathComponent())
+        timeout: timeout)
     print(result)
 } catch {
     die("error: \(error.localizedDescription)")
