@@ -128,20 +128,28 @@ let memoryURL = URL(fileURLWithPath: env["TYKAOZ_MEMORY_FILE"]
     ?? (NSHomeDirectory() + "/.tykaoz/cli-memories.json"))
 let memory = CLIMemoryStore(fileURL: memoryURL)
 
+// Native (OS-bound) tools: memory + files stay in Swift.
 var tools: [any Tool] = [
-    CurrentDateTimeTool(),
-    FetchURLTool(),
     SaveMemoryTool(store: memory),
     ListMemoriesTool(store: memory),
     ReadMemoryTool(store: memory),
 ]
-if let brave = env["BRAVE_API_KEY"], !brave.isEmpty {
-    tools.append(BraveSearchTool(apiKey: brave))
-}
 if !fileRoots.isEmpty {
     tools.append(ListDirectoryTool(roots: fileRoots))
     tools.append(ReadFileTool(roots: fileRoots))
     tools.append(GrepFilesTool(roots: fileRoots))
+}
+// HTTP / pure tools are JS modules (datetime, fetch_url, web_search).
+var jsToolNames = ["datetime", "fetch-url"]
+var toolConfig: [String: Any] = [:]
+if let brave = env["BRAVE_API_KEY"], !brave.isEmpty {
+    jsToolNames.append("web-search")
+    toolConfig["braveApiKey"] = brave
+}
+if let jsTools = JSToolBundle(
+    toolModules: jsToolNames, config: toolConfig,
+    tools: ToolRegistry(tools: []), memory: memory) {
+    tools.append(contentsOf: jsTools.tools())
 }
 let registry = ToolRegistry(tools: tools)
 

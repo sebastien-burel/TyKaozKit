@@ -1,5 +1,6 @@
 import Foundation
 import XSBridgeKit
+import TyKaozHostC
 
 /// Loads a JavaScript script that declares `globalThis.tools = [{ name,
 /// description, input_schema, run: async (args) => … }]` and exposes each entry
@@ -19,8 +20,17 @@ public nonisolated final class JSToolBundle: @unchecked Sendable {
     /// The tool specs declared by the script, read once at load.
     public let specs: [ToolSpec]
 
+    /// - Parameters:
+    ///   - script: JS that declares `globalThis.tools = [{ name, description,
+    ///     input_schema, run }]` (a plain script, or a bootstrap that imports
+    ///     ES modules and pushes their defaults).
+    ///   - installHTTP: install the native `__http` primitive so tools can use
+    ///     the `XMLHttpRequest` shim (HTTP tools).
+    ///   - config: exposed to the tools as `globalThis.__toolConfig` (e.g. API keys).
     public init?(
         script: String,
+        installHTTP: Bool = false,
+        config: [String: Any] = [:],
         makeProvider: @escaping @Sendable () -> (any LLMProvider)? = { nil },
         tools: ToolRegistry,
         memory: MemoryStoring,
@@ -31,8 +41,14 @@ public nonisolated final class JSToolBundle: @unchecked Sendable {
         guard let engine = XSEngine.tyKaoz(host: host) else { return nil }
         self.host = host
         self.engine = engine
+        if installHTTP {
+            engine.withMachine { xsBridgeHttpInstall($0) }
+        }
 
         do {
+            if !config.isEmpty {
+                _ = try engine.eval("globalThis.__toolConfig = \(AgentJSON.string(config));")
+            }
             _ = try engine.eval(script)
             let specsJSON = try engine.eval(
                 "(globalThis.tools||[]).map(function(t){"
@@ -43,6 +59,33 @@ public nonisolated final class JSToolBundle: @unchecked Sendable {
         }
 
         host.onToolResult = { [weak self] params in self?.deliver(params) }
+    }
+
+    /// Load JS tools that ship as bundled ES modules (`Resources/js/tools/<name>.js`,
+    /// each `export default { name, description, input_schema, run }`). Installs
+    /// `__http` so HTTP tools can use the `XMLHttpRequest` shim.
+    public convenience init?(
+        toolModules names: [String],
+        config: [String: Any] = [:],
+        makeProvider: @escaping @Sendable () -> (any LLMProvider)? = { nil },
+        tools: ToolRegistry,
+        memory: MemoryStoring,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        let paths = names.compactMap { JSResource.path("tools/\($0)") }
+        guard paths.count == names.count else { return nil }
+        let imports = paths.map { "import(\(AgentJSON.jsLiteral($0)))" }.joined(separator: ", ")
+        // Dynamic imports resolve within eval's drain, so globalThis.tools is
+        // populated by the time init reads the specs.
+        let bootstrap = """
+        globalThis.tools = [];
+        globalThis.__toolsReady = (async function () {
+            const mods = await Promise.all([\(imports)]);
+            for (const m of mods) globalThis.tools.push(m.default);
+        })();
+        """
+        self.init(script: bootstrap, installHTTP: true, config: config,
+                  makeProvider: makeProvider, tools: tools, memory: memory, log: log)
     }
 
     /// The native `Tool` wrappers for each declared tool.
