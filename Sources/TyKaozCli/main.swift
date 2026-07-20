@@ -120,6 +120,8 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
     case "apple":
         return AppleIntelligenceProvider()
     case "mlx":
+        // MLX needs its Metal library, which `swift build` doesn't produce for a
+        // CLI — run `scripts/link-mlx-metallib.sh` after building (see the script).
         guard let model, !model.isEmpty else { return nil }
         return MLXLLMProvider(modelID: model)
     default:
