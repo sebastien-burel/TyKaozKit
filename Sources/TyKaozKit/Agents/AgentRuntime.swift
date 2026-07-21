@@ -99,6 +99,40 @@ public nonisolated final class AgentRuntime {
             session.start(input: input, timeout: timeout)
         }
     }
+
+    /// Rooted mode for an agent whose source is an in-memory string (not a file
+    /// on disk) — e.g. an app that stores agents as records. The source is
+    /// written to a private temp file (only the agent, no library copy) whose
+    /// directory is the default entry root, searched alongside `roots` (the real,
+    /// un-copied library / user folders). The agent imports bare specifiers
+    /// straight from those folders; nothing is copied. Roots are process-wide for
+    /// the run (shared by sub-agents) and cleared when it ends; the temp file is
+    /// removed. The caller must hold security-scoped access to every root dir for
+    /// the whole call (the engine reads them lazily on its own thread).
+    public func runRootedSource(
+        source: String,
+        roots: [(prefix: String, dir: String)],
+        input: Any? = nil,
+        timeout: TimeInterval = 10
+    ) async throws -> String {
+        // libraryRoot: nil — stage the agent alone, no folder copy.
+        let staging = try AgentModuleStaging(agentSource: source, libraryRoot: nil)
+        TyKaozThreads.register { [makeProvider, tools, memory, log] in
+            TyKaozHost(makeProvider: makeProvider, tools: tools, memory: memory, log: log)
+        }
+        let host = TyKaozHost(
+            makeProvider: makeProvider, tools: tools, memory: memory, log: log)
+        // The staged agent's dir is the first default root; `import "agent"`
+        // resolves to it, real folders follow for the agent's own imports.
+        var allRoots: [(prefix: String, dir: String)] = [("", staging.root.path)]
+        allRoots.append(contentsOf: roots)
+        return try await withCheckedThrowingContinuation { continuation in
+            let session = AgentSession(
+                host: host, entry: "agent", staging: staging, roots: allRoots,
+                continuation: continuation)
+            session.start(input: input, timeout: timeout)
+        }
+    }
 }
 
 /// Owns one engine + host for the lifetime of a single agent run. Retains
