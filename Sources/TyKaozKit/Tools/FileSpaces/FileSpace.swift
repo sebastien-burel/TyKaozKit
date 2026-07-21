@@ -13,23 +13,32 @@ public struct FileSpace: Identifiable, Hashable, Codable {
     /// tools grants read access, not code execution, so importability is an
     /// explicit opt-in (read → execute is an escalation).
     public var importable: Bool
+    /// Whether this (importable) space is also the default module root — the
+    /// one bare specifiers resolve against, so agents can `import "module"`
+    /// with no prefix. At most one space is default (enforced by the store).
+    public var isDefaultRoot: Bool
 
-    public init(id: UUID = UUID(), name: String, bookmark: Data, importable: Bool = false) {
+    public init(
+        id: UUID = UUID(), name: String, bookmark: Data,
+        importable: Bool = false, isDefaultRoot: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.bookmark = bookmark
         self.importable = importable
+        self.isDefaultRoot = isDefaultRoot
     }
 
-    // Back-compat: spaces persisted before `importable` existed decode to false
+    // Back-compat: spaces persisted before these flags existed decode to false
     // (rather than failing the whole list's decode and dropping every space).
-    private enum CodingKeys: String, CodingKey { case id, name, bookmark, importable }
+    private enum CodingKeys: String, CodingKey { case id, name, bookmark, importable, isDefaultRoot }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         bookmark = try c.decode(Data.self, forKey: .bookmark)
         importable = try c.decodeIfPresent(Bool.self, forKey: .importable) ?? false
+        isDefaultRoot = try c.decodeIfPresent(Bool.self, forKey: .isDefaultRoot) ?? false
     }
 }
 
