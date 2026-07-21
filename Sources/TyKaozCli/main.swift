@@ -154,16 +154,18 @@ let resolveProvider: @Sendable (String, [String: Any]) -> (any LLMProvider)? = {
 // The run default (the `--provider` flag), and the catalog JS discovers via
 // host.providers().
 let makeProvider: @Sendable () -> (any LLMProvider)? = { resolveProvider(providerName, [:]) }
+// `model` = the CLI default (--model / TYKAOZ_MODEL), what host.provider(id)
+// resolves to when JS omits a model — so an element is directly instantiable.
 let providerCatalog: [ProviderDescriptor] = [
-    .init(id: "anthropic", name: "Anthropic"),
-    .init(id: "js-anthropic", name: "Anthropic (JS)"),
-    .init(id: "js-openai", name: "OpenAI-compatible (JS)"),
-    .init(id: "js-ollama", name: "Ollama (JS)"),
-    .init(id: "js-google", name: "Google Gemini (JS)"),
-    .init(id: "js-kimi", name: "Kimi K3 (JS)"),
-    .init(id: "local", name: "Local OpenAI"),
+    .init(id: "anthropic", name: "Anthropic", model: model),
+    .init(id: "js-anthropic", name: "Anthropic (JS)", model: model),
+    .init(id: "js-openai", name: "OpenAI-compatible (JS)", model: model),
+    .init(id: "js-ollama", name: "Ollama (JS)", model: model),
+    .init(id: "js-google", name: "Google Gemini (JS)", model: model),
+    .init(id: "js-kimi", name: "Kimi K3 (JS)", model: model ?? "kimi-k3"),
+    .init(id: "local", name: "Local OpenAI", model: model),
     .init(id: "apple", name: "Apple Intelligence"),
-    .init(id: "mlx", name: "MLX"),
+    .init(id: "mlx", name: "MLX", model: model),
 ]
 
 // MARK: - Tools + memory (top-level code in main.swift is @MainActor)

@@ -14,13 +14,18 @@ import TyKaozHostC
 /// touching `@MainActor` state (tools, memory, provider) hops via
 /// `Task { @MainActor in … }` and settles through the thread-safe `HostReply`,
 /// which wakes the engine's run loop. We never block the XS thread.
-/// A provider the host exposes to JS for discovery (`host.providers()`).
+/// A provider the host exposes to JS for discovery (`host.providers()`). `model`
+/// is the provider's configured/default model, so an agent can instantiate an
+/// element directly: `host.provider(item.id, { model: item.model }).chat(...)`
+/// (nil for providers that take no model, e.g. Apple Intelligence).
 public struct ProviderDescriptor: Sendable {
     public let id: String
     public let name: String
-    public init(id: String, name: String) {
+    public let model: String?
+    public init(id: String, name: String, model: String? = nil) {
         self.id = id
         self.name = name
+        self.model = model
     }
 }
 
@@ -246,7 +251,11 @@ extension XSEngine {
         }
         // Publish the provider catalog for host.providers() discovery.
         if !host.providerCatalog.isEmpty {
-            let catalog = host.providerCatalog.map { ["id": $0.id, "name": $0.name] }
+            let catalog = host.providerCatalog.map { d -> [String: Any] in
+                var e: [String: Any] = ["id": d.id, "name": d.name]
+                if let model = d.model { e["model"] = model }
+                return e
+            }
             _ = try? engine.eval("globalThis.__providerCatalog = \(AgentJSON.string(catalog))")
         }
         return engine
