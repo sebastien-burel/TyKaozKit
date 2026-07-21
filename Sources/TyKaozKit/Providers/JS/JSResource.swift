@@ -1,4 +1,5 @@
 import Foundation
+import XSBridge
 
 /// Locates the bundled JS module files (`Resources/js`) that make up the
 /// JS-first runtime — providers, the XMLHttpRequest shim, and the orchestrators.
@@ -8,6 +9,17 @@ enum JSResource {
     /// The `js` resource directory inside this package's bundle, or nil if the
     /// resources were not bundled (a build misconfiguration).
     static let directory: URL? = Bundle.module.url(forResource: "js", withExtension: nil)
+
+    /// Registers this bundle's JS directory as a trusted module prefix, exactly
+    /// once. Module roots are process-wide, so a confined agent's roots also
+    /// govern the framework's own engines (a JS provider, a sub-agent's
+    /// orchestrator) which import these modules by absolute path. Marking the
+    /// directory trusted keeps those imports working while still blocking an
+    /// agent's arbitrary absolute imports. Referenced from every engine factory;
+    /// the `static let` runs its initializer once.
+    static let registerTrustedPrefix: Void = {
+        if let dir = directory?.path { xsBridgeAddTrustedModulePrefix(dir) }
+    }()
 
     /// Absolute filesystem path of a bundled `<name>.js` module, for `import()`.
     static func path(_ name: String) -> String? {
