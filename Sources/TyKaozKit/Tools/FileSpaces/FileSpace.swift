@@ -8,11 +8,28 @@ public struct FileSpace: Identifiable, Hashable, Codable {
     public let id: UUID
     public let name: String
     public var bookmark: Data
+    /// Whether this folder may also serve as a module root — i.e. an agent may
+    /// `import` code from it. Off by default: authorising a folder for the file
+    /// tools grants read access, not code execution, so importability is an
+    /// explicit opt-in (read → execute is an escalation).
+    public var importable: Bool
 
-    public init(id: UUID = UUID(), name: String, bookmark: Data) {
+    public init(id: UUID = UUID(), name: String, bookmark: Data, importable: Bool = false) {
         self.id = id
         self.name = name
         self.bookmark = bookmark
+        self.importable = importable
+    }
+
+    // Back-compat: spaces persisted before `importable` existed decode to false
+    // (rather than failing the whole list's decode and dropping every space).
+    private enum CodingKeys: String, CodingKey { case id, name, bookmark, importable }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        bookmark = try c.decode(Data.self, forKey: .bookmark)
+        importable = try c.decodeIfPresent(Bool.self, forKey: .importable) ?? false
     }
 }
 
