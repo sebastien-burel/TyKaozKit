@@ -14,9 +14,27 @@ import TyKaozHostC
 /// touching `@MainActor` state (tools, memory, provider) hops via
 /// `Task { @MainActor in … }` and settles through the thread-safe `HostReply`,
 /// which wakes the engine's run loop. We never block the XS thread.
+/// A provider the host exposes to JS for discovery (`host.providers()`).
+public struct ProviderDescriptor: Sendable {
+    public let id: String
+    public let name: String
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 public nonisolated final class TyKaozHost {
 
     public let makeProvider: @Sendable () -> (any LLMProvider)?
+    /// Resolve a provider the JS named via `host.provider(id, opts)`. `id` is
+    /// the provider identifier; `options` carries the rest of the selector
+    /// (`model`, `baseURL`, …). The consumer maps ids to concrete providers
+    /// (HTTP, MLX, Apple), injecting secrets itself — JS never sees API keys.
+    /// nil (or a nil result) → `host.llm`'s default `makeProvider` is used.
+    public let resolveProvider: (@Sendable (_ id: String, _ options: [String: Any]) -> (any LLMProvider)?)?
+    /// The provider ids/names surfaced to JS via `host.providers()`.
+    public let providerCatalog: [ProviderDescriptor]
     public let tools: ToolRegistry
     public let memory: MemoryStoring
     public let log: @Sendable (String) -> Void
@@ -30,11 +48,15 @@ public nonisolated final class TyKaozHost {
 
     public init(
         makeProvider: @escaping @Sendable () -> (any LLMProvider)?,
+        resolveProvider: (@Sendable (_ id: String, _ options: [String: Any]) -> (any LLMProvider)?)? = nil,
+        providerCatalog: [ProviderDescriptor] = [],
         tools: ToolRegistry,
         memory: MemoryStoring,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.makeProvider = makeProvider
+        self.resolveProvider = resolveProvider
+        self.providerCatalog = providerCatalog
         self.tools = tools
         self.memory = memory
         self.log = log
@@ -47,8 +69,19 @@ public nonisolated final class TyKaozHost {
     private static let maxToolRounds = 20
 
     public func chat(params: [Any], reply: HostReply) {
-        guard let provider = makeProvider() else {
-            reply.reject(AgentJSON.string("no LLM provider configured"))
+        // params: [messages, toolNames, selector]. selector = {id?, model?, …}
+        // from host.provider(id, opts); a nil/absent id → the default provider.
+        let selector = (params.count > 2 ? params[2] as? [String: Any] : nil) ?? [:]
+        let provider: (any LLMProvider)?
+        if let id = selector["id"] as? String {
+            provider = resolveProvider?(id, selector)
+        } else {
+            provider = makeProvider()
+        }
+        guard let provider else {
+            reply.reject(AgentJSON.string(
+                (selector["id"] as? String).map { "provider indisponible : \($0)" }
+                    ?? "no LLM provider configured"))
             return
         }
         var history = AgentJSON.decodeMessages(params.first)
@@ -210,6 +243,11 @@ extension XSEngine {
         // import resolves within eval's drain.
         if let orchestratorImport = JSResource.importStatement("agent-orchestrator") {
             _ = try? engine.eval(orchestratorImport)
+        }
+        // Publish the provider catalog for host.providers() discovery.
+        if !host.providerCatalog.isEmpty {
+            let catalog = host.providerCatalog.map { ["id": $0.id, "name": $0.name] }
+            _ = try? engine.eval("globalThis.__providerCatalog = \(AgentJSON.string(catalog))")
         }
         return engine
     }

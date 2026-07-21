@@ -98,8 +98,14 @@ let env = ProcessInfo.processInfo.environment
 
 // MARK: - Provider (built lazily, off the XS thread)
 
-let makeProvider: @Sendable () -> (any LLMProvider)? = {
-    switch providerName {
+// Resolve any provider by id, with JS-supplied options (`model`, `baseURL`)
+// overriding the CLI defaults. Secrets (API keys) come from the environment
+// here — never from JS. This backs both the run default (`--provider`) and the
+// per-call `host.provider(id, {model})` selection from JavaScript.
+let resolveProvider: @Sendable (String, [String: Any]) -> (any LLMProvider)? = { id, options in
+    let model = (options["model"] as? String) ?? model
+    func base(_ envKey: String) -> String? { (options["baseURL"] as? String) ?? env[envKey] }
+    switch id {
     case "anthropic":
         guard let key = env["ANTHROPIC_API_KEY"], !key.isEmpty, let model, !model.isEmpty else {
             return nil
@@ -109,29 +115,29 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
         guard let key = env["ANTHROPIC_API_KEY"], !key.isEmpty, let model, !model.isEmpty else {
             return nil
         }
-        return JSProviders.anthropic(apiKey: key, model: model, baseURL: env["ANTHROPIC_BASE_URL"])
+        return JSProviders.anthropic(apiKey: key, model: model, baseURL: base("ANTHROPIC_BASE_URL"))
     case "js-openai":
         guard let key = env["OPENAI_API_KEY"], !key.isEmpty, let model, !model.isEmpty else {
             return nil
         }
-        return JSProviders.openai(apiKey: key, model: model, baseURL: env["OPENAI_BASE_URL"])
+        return JSProviders.openai(apiKey: key, model: model, baseURL: base("OPENAI_BASE_URL"))
     case "js-ollama":
         guard let model, !model.isEmpty else { return nil }
         return JSProviders.ollama(
-            model: model, baseURL: env["OLLAMA_BASE_URL"] ?? "http://localhost:11434")
+            model: model, baseURL: base("OLLAMA_BASE_URL") ?? "http://localhost:11434")
     case "js-google":
         guard let key = env["GOOGLE_API_KEY"], !key.isEmpty, let model, !model.isEmpty else {
             return nil
         }
-        return JSProviders.google(apiKey: key, model: model, baseURL: env["GOOGLE_BASE_URL"])
+        return JSProviders.google(apiKey: key, model: model, baseURL: base("GOOGLE_BASE_URL"))
     case "js-kimi":
         guard let key = env["MOONSHOT_API_KEY"] ?? env["KIMI_API_KEY"], !key.isEmpty else {
             return nil
         }
-        return JSProviders.kimi(apiKey: key, model: model ?? "kimi-k3", baseURL: env["KIMI_BASE_URL"])
+        return JSProviders.kimi(apiKey: key, model: model ?? "kimi-k3", baseURL: base("KIMI_BASE_URL"))
     case "local":
-        let base = env["TYKAOZ_LOCAL_BASE_URL"] ?? "http://localhost:1234/v1"
-        guard let url = URL(string: base), let model, !model.isEmpty else { return nil }
+        let b = base("TYKAOZ_LOCAL_BASE_URL") ?? "http://localhost:1234/v1"
+        guard let url = URL(string: b), let model, !model.isEmpty else { return nil }
         return LocalOpenAIProvider(
             baseURL: url, apiKey: env["TYKAOZ_LOCAL_API_KEY"] ?? "", model: model)
     case "apple":
@@ -145,6 +151,20 @@ let makeProvider: @Sendable () -> (any LLMProvider)? = {
         return nil
     }
 }
+// The run default (the `--provider` flag), and the catalog JS discovers via
+// host.providers().
+let makeProvider: @Sendable () -> (any LLMProvider)? = { resolveProvider(providerName, [:]) }
+let providerCatalog: [ProviderDescriptor] = [
+    .init(id: "anthropic", name: "Anthropic"),
+    .init(id: "js-anthropic", name: "Anthropic (JS)"),
+    .init(id: "js-openai", name: "OpenAI-compatible (JS)"),
+    .init(id: "js-ollama", name: "Ollama (JS)"),
+    .init(id: "js-google", name: "Google Gemini (JS)"),
+    .init(id: "js-kimi", name: "Kimi K3 (JS)"),
+    .init(id: "local", name: "Local OpenAI"),
+    .init(id: "apple", name: "Apple Intelligence"),
+    .init(id: "mlx", name: "MLX"),
+]
 
 // MARK: - Tools + memory (top-level code in main.swift is @MainActor)
 
@@ -182,6 +202,8 @@ let registry = ToolRegistry(tools: tools)
 
 let runtime = AgentRuntime(
     makeProvider: makeProvider,
+    resolveProvider: resolveProvider,
+    providerCatalog: providerCatalog,
     tools: registry,
     memory: memory,
     log: { FileHandle.standardError.write(Data("[log] \($0)\n".utf8)) })
