@@ -198,6 +198,7 @@ extension XSEngine {
     /// context pointed at `host`, and the JS orchestrator (`host.llm.chat`,
     /// `__runAgent`, `__callTool`) installed. All XS access on the XS thread.
     public static func tyKaoz(host: TyKaozHost) -> XSEngine? {
+        _ = JSResource.registerTrustedPrefix   // bundle JS trusted for absolute import
         guard let engine = XSEngine() else { return nil }
         let hostPtr = Unmanaged.passUnretained(host).toOpaque()
         engine.withMachine { machine in

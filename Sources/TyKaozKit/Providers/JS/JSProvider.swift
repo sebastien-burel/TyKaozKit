@@ -27,6 +27,7 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
     ///   in `Resources/js` (e.g. `"anthropic"`). It sets `tyProvider` (via its
     ///   default export) and pulls in the XMLHttpRequest shim itself.
     public init?(id: String, displayName: String, providerModule: String, config: [String: Any]) {
+        _ = JSResource.registerTrustedPrefix   // bundle JS trusted for absolute import
         guard let engine = XSEngine(),
               let providerPath = JSResource.path(providerModule),
               let orchestratorPath = JSResource.path("provider-orchestrator")
