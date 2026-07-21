@@ -15,6 +15,9 @@ let xsDefines: [CSetting] = [
   .define("mxDebug", to: "1"),
   .define("mxStringInfoCacheLength", to: "4"),
   .define("mxSnapshot", to: "1"),
+  // Silence XS's own stdout traces (caught-exception/error reports). Kept in
+  // sync with XSBridgeKit's xsDefines — see its Package.swift.
+  .define("mxNoConsole", to: "1"),
 ]
 
 // Header search paths must stay inside the package root, so we reach the XS

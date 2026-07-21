@@ -87,12 +87,14 @@ static void xs_ty_tool_result(xsMachine* the)
     free(json);
 }
 
-/* host.__chat(messages, tools, onToken) — async LLM turn with token stream. */
+/* host.__chat(messages, tools, selector, onToken) — async LLM turn with token
+ * stream. `selector` is {id?, model?, …}: which provider to use (absent id =
+ * the run's default). */
 static void xs_ty_chat(xsMachine* the)
 {
     void* bridge = xsGetContext(the);
-    char* json = ty_args_json(the, 2);            /* [messages, tools] */
-    uint32_t id = xsServicePromise(the, &xsArg(2)); /* roots onToken */
+    char* json = ty_args_json(the, 3);            /* [messages, tools, selector] */
+    uint32_t id = xsServicePromise(the, &xsArg(3)); /* roots onToken */
     xsbTyChat(bridge, id, json);
     free(json);
 }
@@ -181,7 +183,7 @@ void xsBridgeTyKaozInstall(void* machine)
             xsSet(xsVar(0), xsID("__fail"), xsVar(2));
             xsVar(2) = xsNewHostFunction(xs_ty_tool_result, 3);
             xsSet(xsVar(0), xsID("__toolResult"), xsVar(2));
-            xsVar(2) = xsNewHostFunction(xs_ty_chat, 3);
+            xsVar(2) = xsNewHostFunction(xs_ty_chat, 4);
             xsSet(xsVar(0), xsID("__chat"), xsVar(2));
 
             xsVar(1) = xsNewObject();

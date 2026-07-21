@@ -2,14 +2,30 @@
 // effect module: importing it wires host.llm, globalThis.__runAgent (dynamic-
 // imports the staged agent module and reports its result) and __callTool.
 // `host` is a global installed by TyKaozHostC.
-host.llm = {
-  chat: function (messages, opts, onToken) {
-    if (typeof opts === 'function') { onToken = opts; opts = {}; }
-    opts = opts || {};
-    if (typeof onToken !== 'function') onToken = function () {};
-    return host.__chat(messages, opts.tools || [], onToken);
-  }
+// A provider handle: `host.provider("mlx", { model }).chat(messages, { tools }, onToken)`.
+// `id` selects the provider (omit for the run's default); extra opts (model,
+// baseURL, …) are forwarded to the host's Swift resolver. Secrets (API keys)
+// stay in Swift — never pass them from here.
+host.provider = function (id, providerOpts) {
+  providerOpts = providerOpts || {};
+  return {
+    chat: function (messages, opts, onToken) {
+      if (typeof opts === 'function') { onToken = opts; opts = {}; }
+      opts = opts || {};
+      if (typeof onToken !== 'function') onToken = function () {};
+      var selector = {};
+      if (id !== undefined && id !== null) selector.id = id;
+      for (var k in providerOpts) selector[k] = providerOpts[k];
+      return host.__chat(messages, opts.tools || [], selector, onToken);
+    }
+  };
 };
+
+// The default handle (the run's configured provider). Keeps host.llm.chat(...).
+host.llm = host.provider();
+
+// Discovery: the provider ids/names the host exposes (set by Swift at startup).
+host.providers = function () { return globalThis.__providerCatalog || []; };
 
 globalThis.__runAgent = function (path, inputJSON) {
   var input = JSON.parse(inputJSON);
