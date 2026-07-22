@@ -85,6 +85,17 @@ let fileRoots: [AuthorizedRoot] = popFlagAll("--root").map { path in
     return AuthorizedRoot(name: url.lastPathComponent, url: url)
 }
 
+// Actuation (opt-in, confined). `--allow-write DIR` authorises writable folders
+// for write_file/edit_file (a separate grant from --root read access);
+// `--allow-shell` grants run_shell in `--shell-dir` (default: current dir).
+// Parsed here, before the script path, so the flags aren't mistaken for it.
+let writeRoots: [AuthorizedRoot] = popFlagAll("--allow-write").map { path in
+    let url = URL(fileURLWithPath: path, isDirectory: true)
+    return AuthorizedRoot(name: url.lastPathComponent, url: url)
+}
+let allowShell = popBool("--allow-shell")
+let shellDir = popFlag("--shell-dir")
+
 // Dev harness for the native __http primitive + XMLHttpRequest shim (C1): runs
 // a bare engine (no provider/LLM) and prints the JSON on `globalThis.__result`.
 if let probePath = popFlag("--http-eval") {
@@ -104,7 +115,8 @@ guard let scriptPath = args.first else {
     die("""
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \
         [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...] \
-        [--modules nom=dir ...] [--resident [--daemon] [--state FILE]]
+        [--modules nom=dir ...] [--resident [--daemon] [--state FILE]] \
+        [--allow-write DIR ...] [--allow-shell [--shell-dir DIR]]
         """, code: 2)
 }
 
@@ -212,6 +224,17 @@ if !fileRoots.isEmpty {
     tools.append(ListDirectoryTool(roots: fileRoots))
     tools.append(ReadFileTool(roots: fileRoots))
     tools.append(GrepFilesTool(roots: fileRoots))
+}
+// Actuation (opt-in). Write/edit confined to --allow-write folders; shell in
+// its own working directory.
+if !writeRoots.isEmpty {
+    tools.append(WriteFileTool(roots: writeRoots))
+    tools.append(EditFileTool(roots: writeRoots))
+}
+if allowShell {
+    let cwd = shellDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    tools.append(ShellTool(workingDirectory: cwd, timeout: timeout))
 }
 // HTTP / pure tools are JS modules (datetime, fetch_url, web_search).
 var jsToolNames = ["datetime", "fetch-url"]
