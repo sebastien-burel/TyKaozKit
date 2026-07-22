@@ -96,6 +96,14 @@ let writeRoots: [AuthorizedRoot] = popFlagAll("--allow-write").map { path in
 let allowShell = popBool("--allow-shell")
 let shellDir = popFlag("--shell-dir")
 
+// Channels (Phase 5). `--allow-http [--http-host H ...]` enables the outbound
+// http_request tool (optionally host-restricted). `--webhook PORT` runs an
+// inbound HTTP server that delivers each request body to the resident agent and
+// replies with its result (implies resident + daemon).
+let httpHosts = popFlagAll("--http-host")
+let allowHTTP = popBool("--allow-http") || !httpHosts.isEmpty
+let webhookPort = popFlag("--webhook").flatMap { UInt16($0) }
+
 // Dev harness for the native __http primitive + XMLHttpRequest shim (C1): runs
 // a bare engine (no provider/LLM) and prints the JSON on `globalThis.__result`.
 if let probePath = popFlag("--http-eval") {
@@ -116,7 +124,8 @@ guard let scriptPath = args.first else {
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \
         [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...] \
         [--modules nom=dir ...] [--resident [--daemon] [--state FILE]] \
-        [--allow-write DIR ...] [--allow-shell [--shell-dir DIR]]
+        [--allow-write DIR ...] [--allow-shell [--shell-dir DIR]] \
+        [--allow-http [--http-host H ...]] [--webhook PORT]
         """, code: 2)
 }
 
@@ -236,6 +245,9 @@ if allowShell {
         ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     tools.append(ShellTool(workingDirectory: cwd, timeout: timeout))
 }
+if allowHTTP {
+    tools.append(HTTPRequestTool(allowedHosts: httpHosts.isEmpty ? nil : httpHosts))
+}
 // HTTP / pure tools are JS modules (datetime, fetch_url, web_search).
 var jsToolNames = ["datetime", "fetch-url"]
 var toolConfig: [String: Any] = [:]
@@ -280,6 +292,10 @@ if let libraryDir {
 }
 moduleRoots.append(contentsOf: namedModuleRoots)
 
+// Retains the webhook server for the daemon's lifetime (assigned inside the
+// resident branch; a top-level var outlives that scope's parked await).
+var retainedWebhook: WebhookServer?
+
 if resident {
     // A resident agent: one engine, many deliveries. Read a JSON message per
     // stdin line, deliver it, print the handler's JSON result. State persists.
@@ -307,6 +323,28 @@ if resident {
     // Line-buffer stdout so results appear promptly even when piped (a daemon is
     // killed, not exited, so block buffering would swallow its output).
     setvbuf(stdout, nil, _IOLBF, 0)
+
+    // Inbound channel: an HTTP server that delivers each request body to the
+    // agent and replies with its result. Keeps the process alive (implies daemon).
+    var webhookServer: WebhookServer?
+    if let webhookPort {
+        webhookServer = try? WebhookServer(port: webhookPort) { bodyData in
+            let payload: Any = (try? JSONSerialization.jsonObject(
+                with: bodyData, options: [.fragmentsAllowed]))
+                ?? (String(data: bodyData, encoding: .utf8) ?? "")
+            let result = (try? await agent.deliver(
+                kind: "message", payload: payload, timeout: timeout))
+                ?? #"{"error":"agent delivery failed"}"#
+            return Data(result.utf8)
+        }
+        if webhookServer != nil {
+            webhookServer?.start()
+            FileHandle.standardError.write(Data("[webhook] listening on :\(webhookPort)\n".utf8))
+        } else {
+            FileHandle.standardError.write(Data("webhook: failed to bind :\(webhookPort)\n".utf8))
+        }
+    }
+
     let deliverMessage: (Any) async -> Void = { payload in
         do {
             print(try await agent.deliver(kind: "message", payload: payload, timeout: timeout))
@@ -323,17 +361,21 @@ if resident {
         } ?? t
     }
 
-    if daemon {
-        // Proactive agent: kick it once (via --input), then stay alive so its own
-        // scheduled ticks (host.schedule/every) keep firing. Reads more stdin
-        // messages in the background. Runs until killed.
+    if daemon || webhookServer != nil {
+        // Proactive / channel-driven agent: kick it once (via --input), then stay
+        // alive so its scheduled ticks (host.schedule/every) fire and the webhook
+        // server keeps serving. Reads more stdin messages in the background.
         if let input { await deliverMessage(input) }
-        Task {
+        let stdinReader = Task {
             while let line = readLine(strippingNewline: true) {
                 if let payload = parseLine(line) { await deliverMessage(payload) }
             }
         }
+        _ = stdinReader
+        retainedWebhook = webhookServer   // keep the listener alive past this scope
         FileHandle.standardError.write(Data("[daemon] running — Ctrl-C to stop\n".utf8))
+        // Park without blocking a thread (timers + the webhook run on their own
+        // queues, deliveries on the concurrency pool). Runs until killed.
         await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
     }
 
