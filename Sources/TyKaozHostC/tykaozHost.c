@@ -35,6 +35,7 @@ extern void xsbTyToolResult(void* bridge, const char* json);
 extern void xsbTyDeliverResult(void* bridge, uint32_t id, const char* json, int isError);
 extern uint32_t xsbTySchedule(void* bridge, double delayMs, int repeating, const char* payloadJSON);
 extern void xsbTyCancel(void* bridge, uint32_t handle);
+extern void xsbTyMemorySearch(void* bridge, uint32_t id, const char* json);
 
 /* JSON.stringify([xsArg(0..n-1)]) as a malloc'd string — the positional params
  * array Swift expects (AgentJSON.params). Uses xsResult as scratch, so call it
@@ -186,6 +187,16 @@ static void xs_ty_memory_list(xsMachine* the)
     xsbTyMemoryList(bridge, id);
 }
 
+/* host.memory.search(query, limit?) — async semantic retrieval. */
+static void xs_ty_memory_search(xsMachine* the)
+{
+    void* bridge = xsGetContext(the);
+    char* json = ty_args_json(the, 2);   /* [query, limit?] */
+    uint32_t id = xsServicePromise(the, NULL);
+    xsbTyMemorySearch(bridge, id, json);
+    free(json);
+}
+
 /* Frozen, append-only host table for snapshot callback projection. */
 static const XSBridgeHostFn gTyHostTable[] = {
     { "log", xs_ty_log },
@@ -202,6 +213,7 @@ static const XSBridgeHostFn gTyHostTable[] = {
     { "schedule", xs_ty_schedule },
     { "every", xs_ty_every },
     { "cancel", xs_ty_cancel },
+    { "memory.search", xs_ty_memory_search },
 };
 
 static void ty_register(void)
@@ -254,6 +266,8 @@ void xsBridgeTyKaozInstall(void* machine)
             xsSet(xsVar(1), xsID("read"), xsVar(2));
             xsVar(2) = xsNewHostFunction(xs_ty_memory_list, 0);
             xsSet(xsVar(1), xsID("list"), xsVar(2));
+            xsVar(2) = xsNewHostFunction(xs_ty_memory_search, 2);
+            xsSet(xsVar(1), xsID("search"), xsVar(2));
         }
         xsCatch {
         }
