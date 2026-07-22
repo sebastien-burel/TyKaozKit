@@ -106,6 +106,10 @@ let tokenBudget = popFlag("--budget").flatMap { Int($0) }
 let httpHosts = popFlagAll("--http-host")
 let allowHTTP = popBool("--allow-http") || !httpHosts.isEmpty
 let webhookPort = popFlag("--webhook").flatMap { UInt16($0) }
+// Email (Proton Bridge by default): `--email` enables send_email/read_email
+// over local IMAP/SMTP. Credentials from env (the Bridge shows them):
+// PROTON_BRIDGE_USER / _PASS / _FROM (+ optional _HOST / _SMTP_PORT / _IMAP_PORT).
+let allowEmail = popBool("--email")
 
 // Dev harness for the native __http primitive + XMLHttpRequest shim (C1): runs
 // a bare engine (no provider/LLM) and prints the JSON on `globalThis.__result`.
@@ -128,7 +132,8 @@ guard let scriptPath = args.first else {
         [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...] \
         [--modules nom=dir ...] [--resident [--daemon] [--state FILE]] \
         [--allow-write DIR ...] [--allow-shell [--shell-dir DIR]] \
-        [--allow-http [--http-host H ...]] [--webhook PORT] [--budget TOKENS]
+        [--allow-http [--http-host H ...]] [--webhook PORT] [--budget TOKENS] \
+        [--email]
         """, code: 2)
 }
 
@@ -250,6 +255,18 @@ if allowShell {
 }
 if allowHTTP {
     tools.append(HTTPRequestTool(allowedHosts: httpHosts.isEmpty ? nil : httpHosts))
+}
+if allowEmail {
+    let emailConfig = EmailConfig(
+        host: env["PROTON_BRIDGE_HOST"] ?? "127.0.0.1",
+        smtpPort: Int(env["PROTON_BRIDGE_SMTP_PORT"] ?? "") ?? 1025,
+        imapPort: Int(env["PROTON_BRIDGE_IMAP_PORT"] ?? "") ?? 1143,
+        username: env["PROTON_BRIDGE_USER"] ?? "",
+        password: env["PROTON_BRIDGE_PASS"] ?? "",
+        fromAddress: env["PROTON_BRIDGE_FROM"] ?? env["PROTON_BRIDGE_USER"] ?? "",
+        starttls: (env["PROTON_BRIDGE_TLS"] ?? "1") != "0")
+    tools.append(SendEmailTool(config: emailConfig))
+    tools.append(ReadEmailTool(config: emailConfig))
 }
 // HTTP / pure tools are JS modules (datetime, fetch_url, web_search).
 var jsToolNames = ["datetime", "fetch-url"]
