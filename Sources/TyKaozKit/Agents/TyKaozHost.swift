@@ -43,6 +43,16 @@ public nonisolated final class TyKaozHost {
     public let tools: ToolRegistry
     public let memory: MemoryStoring
     public let log: @Sendable (String) -> Void
+    /// Optional hard cap on cumulative tokens (prompt+completion) across this
+    /// host's chats; once exceeded, further `host.llm.chat` calls reject. nil =
+    /// unbounded. The agent can also read `host.usage()` and self-limit.
+    public let tokenBudget: Int?
+
+    // Cumulative usage across all chats on this host (thread-safe).
+    private let usageLock = NSLock()
+    private var totalPromptTokens = 0
+    private var totalCompletionTokens = 0
+    private var chatCalls = 0
 
     /// Set by the owning runtime before a run: the agent's result (`__report`)
     /// and failure (`__fail`) channels. Set once, no real race.
@@ -64,6 +74,7 @@ public nonisolated final class TyKaozHost {
         providerCatalog: [ProviderDescriptor] = [],
         tools: ToolRegistry,
         memory: MemoryStoring,
+        tokenBudget: Int? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.makeProvider = makeProvider
@@ -71,7 +82,28 @@ public nonisolated final class TyKaozHost {
         self.providerCatalog = providerCatalog
         self.tools = tools
         self.memory = memory
+        self.tokenBudget = tokenBudget
         self.log = log
+    }
+
+    /// Cumulative token usage + chat-call count for `host.usage()`.
+    public func usageSnapshot() -> (prompt: Int, completion: Int, calls: Int) {
+        usageLock.lock(); defer { usageLock.unlock() }
+        return (totalPromptTokens, totalCompletionTokens, chatCalls)
+    }
+
+    private func addUsage(prompt: Int, completion: Int) {
+        usageLock.lock()
+        totalPromptTokens += prompt
+        totalCompletionTokens += completion
+        usageLock.unlock()
+    }
+
+    /// True if a hard budget is set and already exceeded.
+    private func budgetExceeded() -> Bool {
+        guard let tokenBudget else { return false }
+        usageLock.lock(); defer { usageLock.unlock() }
+        return totalPromptTokens + totalCompletionTokens >= tokenBudget
     }
 
     // MARK: - Handlers (settle via HostReply)
@@ -83,6 +115,11 @@ public nonisolated final class TyKaozHost {
     public func chat(params: [Any], reply: HostReply) {
         // params: [messages, toolNames, selector]. selector = {id?, model?, …}
         // from host.provider(id, opts); a nil/absent id → the default provider.
+        if budgetExceeded() {
+            reply.reject(AgentJSON.string("token budget exceeded (\(tokenBudget ?? 0))"))
+            return
+        }
+        usageLock.lock(); chatCalls += 1; usageLock.unlock()
         let selector = (params.count > 2 ? params[2] as? [String: Any] : nil) ?? [:]
         let provider: (any LLMProvider)?
         if let id = selector["id"] as? String {
@@ -127,7 +164,10 @@ public nonisolated final class TyKaozHost {
                             reasoning += delta
                         case .toolCall(let id, let name, let args, let signature):
                             pendingCalls.append((id, name, args, signature))
-                        case .imageOutput, .metrics:
+                        case .metrics(let m):
+                            self.addUsage(prompt: m.promptTokens ?? 0,
+                                          completion: m.completionTokens ?? 0)
+                        case .imageOutput:
                             break
                         }
                     }
@@ -402,4 +442,18 @@ func xsbTyMemorySearch(
     guard let bridge, let host = tyHost(bridge) else { return }
     host.memorySearch(
         params: AgentJSON.params(string(json)), reply: HostReply(bridge: bridge, id: id))
+}
+
+@_cdecl("xsbTyUsage")
+func xsbTyUsage(
+    _ bridge: UnsafeMutableRawPointer?,
+    _ prompt: UnsafeMutablePointer<Double>?,
+    _ completion: UnsafeMutablePointer<Double>?,
+    _ calls: UnsafeMutablePointer<Double>?
+) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    let u = host.usageSnapshot()
+    prompt?.pointee = Double(u.prompt)
+    completion?.pointee = Double(u.completion)
+    calls?.pointee = Double(u.calls)
 }

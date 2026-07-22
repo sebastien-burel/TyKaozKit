@@ -36,6 +36,7 @@ extern void xsbTyDeliverResult(void* bridge, uint32_t id, const char* json, int 
 extern uint32_t xsbTySchedule(void* bridge, double delayMs, int repeating, const char* payloadJSON);
 extern void xsbTyCancel(void* bridge, uint32_t handle);
 extern void xsbTyMemorySearch(void* bridge, uint32_t id, const char* json);
+extern void xsbTyUsage(void* bridge, double* prompt, double* completion, double* calls);
 
 /* JSON.stringify([xsArg(0..n-1)]) as a malloc'd string — the positional params
  * array Swift expects (AgentJSON.params). Uses xsResult as scratch, so call it
@@ -197,6 +198,18 @@ static void xs_ty_memory_search(xsMachine* the)
     free(json);
 }
 
+/* host.usage() — cumulative { promptTokens, completionTokens, chatCalls } for
+ * this run. Synchronous. */
+static void xs_ty_usage(xsMachine* the)
+{
+    double prompt = 0, completion = 0, calls = 0;
+    xsbTyUsage(xsGetContext(the), &prompt, &completion, &calls);
+    xsResult = xsNewObject();
+    xsSet(xsResult, xsID("promptTokens"), xsNumber(prompt));
+    xsSet(xsResult, xsID("completionTokens"), xsNumber(completion));
+    xsSet(xsResult, xsID("chatCalls"), xsNumber(calls));
+}
+
 /* Frozen, append-only host table for snapshot callback projection. */
 static const XSBridgeHostFn gTyHostTable[] = {
     { "log", xs_ty_log },
@@ -214,6 +227,7 @@ static const XSBridgeHostFn gTyHostTable[] = {
     { "every", xs_ty_every },
     { "cancel", xs_ty_cancel },
     { "memory.search", xs_ty_memory_search },
+    { "usage", xs_ty_usage },
 };
 
 static void ty_register(void)
@@ -250,6 +264,8 @@ void xsBridgeTyKaozInstall(void* machine)
             xsSet(xsVar(0), xsID("every"), xsVar(2));
             xsVar(2) = xsNewHostFunction(xs_ty_cancel, 1);
             xsSet(xsVar(0), xsID("cancel"), xsVar(2));
+            xsVar(2) = xsNewHostFunction(xs_ty_usage, 0);
+            xsSet(xsVar(0), xsID("usage"), xsVar(2));
 
             xsVar(1) = xsNewObject();
             xsSet(xsVar(0), xsID("tool"), xsVar(1));
