@@ -44,6 +44,38 @@ globalThis.__runAgent = function (path, inputJSON) {
     });
 };
 
+// Resident agent: load the module once and keep it alive. The default export
+// may be an object of handlers ({ onMessage, onEvent, onTick }) or a plain
+// run(input)/default function (legacy one-shot, treated as onMessage).
+globalThis.__loadAgent = function (path) {
+  globalThis.__agentReady = import(path).then(function (m) {
+    globalThis.__agent = (m && (m.default || m)) || {};
+  });
+};
+
+// Deliver one event to the resident agent and settle the host by deliveryId —
+// WITHOUT ending the run (the engine stays alive for the next delivery).
+globalThis.__deliver = function (kind, deliveryId, inputJSON) {
+  var input = JSON.parse(inputJSON);
+  Promise.resolve(globalThis.__agentReady)
+    .then(function () {
+      var a = globalThis.__agent || {};
+      var fn;
+      if (kind === 'message') fn = (typeof a === 'function') ? a : (a.onMessage || a.run);
+      else if (kind === 'event') fn = a.onEvent;
+      else if (kind === 'tick') fn = a.onTick;
+      if (typeof fn !== 'function')
+        throw new Error("l'agent n'a pas de handler pour '" + kind + "'");
+      return fn.call(a, input);
+    })
+    .then(function (r) {
+      host.__deliverResult(deliveryId, JSON.stringify(r === undefined ? null : r), false);
+    })
+    .catch(function (e) {
+      host.__deliverResult(deliveryId, String((e && e.stack) || e), true);
+    });
+};
+
 globalThis.__callTool = function (name, argsJSON, callId) {
   var list = globalThis.tools || [];
   var tool = list.find(function (t) { return t.name === name; });
