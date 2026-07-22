@@ -53,6 +53,10 @@ public nonisolated final class TyKaozHost {
     /// Resident delivery outcome (`__deliverResult`, keyed by deliveryId) for
     /// `AgentHost` — settles one delivery without ending the run.
     public nonisolated(unsafe) var onDeliverResult: ((UInt32, String, Bool) -> Void)?
+    /// Self-scheduling (`host.schedule`/`host.every`): the host arms a timer that
+    /// later delivers a `tick`. Returns a cancel handle. `onCancel` disarms it.
+    public nonisolated(unsafe) var onSchedule: ((_ delayMs: Double, _ repeating: Bool, _ payloadJSON: String) -> UInt32)?
+    public nonisolated(unsafe) var onCancel: ((UInt32) -> Void)?
 
     public init(
         makeProvider: @escaping @Sendable () -> (any LLMProvider)?,
@@ -354,4 +358,19 @@ func xsbTyDeliverResult(
 ) {
     guard let bridge, let host = tyHost(bridge) else { return }
     host.onDeliverResult?(id, string(json), isError != 0)
+}
+
+@_cdecl("xsbTySchedule")
+func xsbTySchedule(
+    _ bridge: UnsafeMutableRawPointer?, _ delayMs: Double,
+    _ repeating: Int32, _ payload: UnsafePointer<CChar>?
+) -> UInt32 {
+    guard let bridge, let host = tyHost(bridge) else { return 0 }
+    return host.onSchedule?(delayMs, repeating != 0, string(payload)) ?? 0
+}
+
+@_cdecl("xsbTyCancel")
+func xsbTyCancel(_ bridge: UnsafeMutableRawPointer?, _ handle: UInt32) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.onCancel?(handle)
 }

@@ -17,10 +17,14 @@ import TyKaozHostC   // xsBridgeTyKaozRegister (host table, before restoring a s
 /// JSON result. Deliveries may overlap (each awaits its own id) — the JS side is
 /// single-threaded, so handlers interleave only at `await` boundaries, exactly
 /// like a browser event loop.
-public nonisolated final class AgentHost {
+public nonisolated final class AgentHost: @unchecked Sendable {
 
     private let engine: XSEngine
     private let host: TyKaozHost
+
+    // Self-scheduling (host.schedule/every/cancel): armed timers deliver ticks.
+    private var timers: [UInt32: DispatchSourceTimer] = [:]
+    private var nextTimerHandle: UInt32 = 1
 
     /// One in-flight delivery: its awaiting continuation + optional timeout item.
     private struct Delivery {
@@ -139,6 +143,48 @@ public nonisolated final class AgentHost {
             if isError { cont.resume(throwing: AgentError.script(json)) }
             else { cont.resume(returning: json) }
         }
+        host.onSchedule = { [weak self] delayMs, repeating, payloadJSON in
+            self?.arm(delayMs: delayMs, repeating: repeating, payloadJSON: payloadJSON) ?? 0
+        }
+        host.onCancel = { [weak self] handle in self?.disarm(handle) }
+    }
+
+    /// Arm a timer that delivers a `tick` (the payload) after / every `delayMs`.
+    /// Returns a handle for `disarm`. Runs the tick off a background queue → the
+    /// engine thread, like any delivery.
+    private func arm(delayMs: Double, repeating: Bool, payloadJSON: String) -> UInt32 {
+        let payload: Any = payloadJSON.data(using: .utf8).flatMap {
+            try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed])
+        } ?? NSNull()
+        let interval = max(0, delayMs) / 1000.0
+        let handle: UInt32 = {
+            lock.lock(); defer { lock.unlock() }
+            let v = nextTimerHandle; nextTimerHandle &+= 1; return v
+        }()
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        if repeating {
+            timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
+        } else {
+            timer.schedule(deadline: .now() + interval, leeway: .milliseconds(50))
+        }
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            if !repeating { self.disarm(handle) }   // one-shot: fire once
+            Task { try? await self.deliver(kind: "tick", payload: payload) }
+        }
+        lock.lock()
+        if closed { lock.unlock(); timer.cancel(); return 0 }
+        timers[handle] = timer
+        lock.unlock()
+        timer.resume()
+        return handle
+    }
+
+    private func disarm(_ handle: UInt32) {
+        lock.lock()
+        let timer = timers.removeValue(forKey: handle)
+        lock.unlock()
+        timer?.cancel()
     }
 
     /// Deliver one event to the resident agent and await its handler's JSON
@@ -199,16 +245,26 @@ public nonisolated final class AgentHost {
         closed = true
         let orphans = Array(pending.values)
         pending.removeAll()
+        let armed = Array(timers.values)
+        timers.removeAll()
         lock.unlock()
+        for t in armed { t.cancel() }
         for d in orphans {
             d.timeoutItem?.cancel()
             d.cont.resume(throwing: AgentError.script("agent host closed"))
         }
         host.onDeliverResult = nil
+        host.onSchedule = nil
+        host.onCancel = nil
         let engine = self.engine
         DispatchQueue.global().async {
             engine.runUntilIdle(timeout: 2)
             withExtendedLifetime(engine) {}
         }
+    }
+
+    deinit {
+        // A DispatchSourceTimer must be cancelled before release.
+        for t in timers.values { t.cancel() }
     }
 }

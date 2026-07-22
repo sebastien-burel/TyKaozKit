@@ -33,6 +33,8 @@ extern void xsbTyMemoryRead(void* bridge, uint32_t id, const char* json);
 extern void xsbTyMemoryList(void* bridge, uint32_t id);
 extern void xsbTyToolResult(void* bridge, const char* json);
 extern void xsbTyDeliverResult(void* bridge, uint32_t id, const char* json, int isError);
+extern uint32_t xsbTySchedule(void* bridge, double delayMs, int repeating, const char* payloadJSON);
+extern void xsbTyCancel(void* bridge, uint32_t handle);
 
 /* JSON.stringify([xsArg(0..n-1)]) as a malloc'd string — the positional params
  * array Swift expects (AgentJSON.params). Uses xsResult as scratch, so call it
@@ -97,6 +99,33 @@ static void xs_ty_deliver_result(xsMachine* the)
     uint32_t id = (uint32_t)xsToInteger(xsArg(0));
     int isError = xsToBoolean(xsArg(2));
     xsbTyDeliverResult(bridge, id, xsToString(xsArg(1)), isError);
+}
+
+/* host.schedule(delayMs, payload?) / host.every(intervalMs, payload?) — ask the
+ * host to deliver a "tick" (the payload) to the agent's onTick after / every the
+ * delay. Returns an integer handle for host.cancel(handle). */
+static void ty_schedule_impl(xsMachine* the, int repeating)
+{
+    void* bridge = xsGetContext(the);
+    double ms = xsToNumber(xsArg(0));
+    char* payload = NULL;
+    if (xsToInteger(xsArgc) > 1) {
+        /* JSON.stringify(payload) — use xsResult as scratch, then overwrite it
+         * with the handle at the end. */
+        xsResult = xsCall1(xsGet(xsGlobal, xsID("JSON")), xsID("stringify"), xsArg(1));
+        payload = strdup(xsToString(xsResult));
+    }
+    uint32_t handle = xsbTySchedule(bridge, ms, repeating, payload ? payload : "null");
+    free(payload);
+    xsResult = xsInteger((int)handle);
+}
+static void xs_ty_schedule(xsMachine* the) { ty_schedule_impl(the, 0); }
+static void xs_ty_every(xsMachine* the) { ty_schedule_impl(the, 1); }
+
+/* host.cancel(handle) — cancel a scheduled tick. */
+static void xs_ty_cancel(xsMachine* the)
+{
+    xsbTyCancel(xsGetContext(the), (uint32_t)xsToInteger(xsArg(0)));
 }
 
 /* host.__chat(messages, tools, selector, onToken) — async LLM turn with token
@@ -170,6 +199,9 @@ static const XSBridgeHostFn gTyHostTable[] = {
     { "memory.read", xs_ty_memory_read },
     { "memory.list", xs_ty_memory_list },
     { "__deliverResult", xs_ty_deliver_result },
+    { "schedule", xs_ty_schedule },
+    { "every", xs_ty_every },
+    { "cancel", xs_ty_cancel },
 };
 
 static void ty_register(void)
@@ -200,6 +232,12 @@ void xsBridgeTyKaozInstall(void* machine)
             xsSet(xsVar(0), xsID("__deliverResult"), xsVar(2));
             xsVar(2) = xsNewHostFunction(xs_ty_chat, 4);
             xsSet(xsVar(0), xsID("__chat"), xsVar(2));
+            xsVar(2) = xsNewHostFunction(xs_ty_schedule, 2);
+            xsSet(xsVar(0), xsID("schedule"), xsVar(2));
+            xsVar(2) = xsNewHostFunction(xs_ty_every, 2);
+            xsSet(xsVar(0), xsID("every"), xsVar(2));
+            xsVar(2) = xsNewHostFunction(xs_ty_cancel, 1);
+            xsSet(xsVar(0), xsID("cancel"), xsVar(2));
 
             xsVar(1) = xsNewObject();
             xsSet(xsVar(0), xsID("tool"), xsVar(1));

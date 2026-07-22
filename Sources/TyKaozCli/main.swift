@@ -63,6 +63,10 @@ let resident = popBool("--resident")
 // on start (if it exists), snapshot back to it on exit. Implies a non-threaded
 // engine (snapshot-capable).
 let statePath = popFlag("--state")
+// Daemon: after the initial --input message, stay alive so the agent's own
+// scheduled ticks (host.schedule/every) keep firing. Still reads stdin for more
+// messages in the background. Runs until killed (Ctrl-C).
+let daemon = popBool("--daemon")
 
 // Module roots (Moddable-style): named external roots the agent imports from
 // with `import "nom/module"`. Each `--modules nom=dir` maps a prefix to a dir;
@@ -100,7 +104,7 @@ guard let scriptPath = args.first else {
     die("""
         usage: TyKaozCli <agent.js> [--provider anthropic|local] [--model M] \
         [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...] \
-        [--modules nom=dir ...]
+        [--modules nom=dir ...] [--resident [--daemon] [--state FILE]]
         """, code: 2)
 }
 
@@ -267,20 +271,41 @@ if resident {
     guard let agent = agentOpt else {
         die("error: cannot create resident agent")
     }
-    while let line = readLine(strippingNewline: true) {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { continue }
-        let payload: Any = trimmed.data(using: .utf8).flatMap {
-            try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed])
-        } ?? trimmed
+    // Line-buffer stdout so results appear promptly even when piped (a daemon is
+    // killed, not exited, so block buffering would swallow its output).
+    setvbuf(stdout, nil, _IOLBF, 0)
+    let deliverMessage: (Any) async -> Void = { payload in
         do {
-            let result = try await agent.deliver(
-                kind: "message", payload: payload, timeout: timeout)
-            print(result)
+            print(try await agent.deliver(kind: "message", payload: payload, timeout: timeout))
         } catch {
             FileHandle.standardError.write(
                 Data("error: \(error.localizedDescription)\n".utf8))
         }
+    }
+    let parseLine: (String) -> Any? = { line in
+        let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return nil }
+        return t.data(using: .utf8).flatMap {
+            try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed])
+        } ?? t
+    }
+
+    if daemon {
+        // Proactive agent: kick it once (via --input), then stay alive so its own
+        // scheduled ticks (host.schedule/every) keep firing. Reads more stdin
+        // messages in the background. Runs until killed.
+        if let input { await deliverMessage(input) }
+        Task {
+            while let line = readLine(strippingNewline: true) {
+                if let payload = parseLine(line) { await deliverMessage(payload) }
+            }
+        }
+        FileHandle.standardError.write(Data("[daemon] running — Ctrl-C to stop\n".utf8))
+        await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+    }
+
+    while let line = readLine(strippingNewline: true) {
+        if let payload = parseLine(line) { await deliverMessage(payload) }
     }
     // Persist the JS heap (state) for the next process, if requested.
     if let statePath {
