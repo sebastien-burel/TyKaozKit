@@ -120,6 +120,11 @@ public final class JSProvider: LLMProvider, @unchecked Sendable {
                 name: obj["name"] as? String ?? "",
                 argumentsJSON: obj["arguments"] as? String ?? "{}",
                 thoughtSignature: obj["thoughtSignature"] as? String))
+        case "metrics":
+            var m = GenerationMetrics()
+            m.promptTokens = (obj["promptTokens"] as? NSNumber)?.intValue
+            m.completionTokens = (obj["completionTokens"] as? NSNumber)?.intValue
+            cont?.yield(.metrics(m))
         default:
             break
         }

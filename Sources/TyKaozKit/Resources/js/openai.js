@@ -32,7 +32,10 @@ async function chat(req, onEvent) {
   const cfg = req.config || {};
   // baseURL includes the API version path (…/v1, …/v4); we append the route.
   const base = (cfg.baseURL || "https://api.openai.com/v1").replace(/\/+$/, "");
-  const body = { model: cfg.model, stream: true, messages: buildMessages(req.messages || []) };
+  const body = {
+    model: cfg.model, stream: true, messages: buildMessages(req.messages || []),
+    stream_options: { include_usage: true },   // final chunk carries token usage
+  };
   if (req.tools && req.tools.length) {
     body.tools = req.tools.map((t) => ({
       type: "function",
@@ -63,8 +66,12 @@ async function chat(req, onEvent) {
       if (!payload) return;
       if (payload === "[DONE]") { flushTools(); return; }
       let ev; try { ev = JSON.parse(payload); } catch (e) { return; }
+      if (ev.usage) {
+        onEvent({ type: "metrics", promptTokens: ev.usage.prompt_tokens,
+                  completionTokens: ev.usage.completion_tokens });
+      }
       const choice = ev.choices && ev.choices[0];
-      if (!choice) return;
+      if (!choice) return;   // usage-only final chunk has no choices
       const delta = choice.delta || {};
       if (delta.content) onEvent({ type: "textDelta", text: delta.content });
       if (delta.reasoning_content) onEvent({ type: "reasoningDelta", text: delta.reasoning_content });

@@ -95,6 +95,9 @@ let writeRoots: [AuthorizedRoot] = popFlagAll("--allow-write").map { path in
 }
 let allowShell = popBool("--allow-shell")
 let shellDir = popFlag("--shell-dir")
+// Hard token budget (prompt+completion) across the run; further host.llm.chat
+// calls reject once exceeded. The agent can also read host.usage() to self-limit.
+let tokenBudget = popFlag("--budget").flatMap { Int($0) }
 
 // Channels (Phase 5). `--allow-http [--http-host H ...]` enables the outbound
 // http_request tool (optionally host-restricted). `--webhook PORT` runs an
@@ -125,7 +128,7 @@ guard let scriptPath = args.first else {
         [--input JSON] [--library DIR] [--timeout SEC] [--root DIR ...] \
         [--modules nom=dir ...] [--resident [--daemon] [--state FILE]] \
         [--allow-write DIR ...] [--allow-shell [--shell-dir DIR]] \
-        [--allow-http [--http-host H ...]] [--webhook PORT]
+        [--allow-http [--http-host H ...]] [--webhook PORT] [--budget TOKENS]
         """, code: 2)
 }
 
@@ -271,6 +274,7 @@ let runtime = AgentRuntime(
     providerCatalog: providerCatalog,
     tools: registry,
     memory: memory,
+    tokenBudget: tokenBudget,
     log: { FileHandle.standardError.write(Data("[log] \($0)\n".utf8)) })
 
 let input: Any? = inputJSON.flatMap {
@@ -310,11 +314,13 @@ if resident {
         AgentHost(
             snapshot: data, roots: moduleRoots,
             makeProvider: makeProvider, resolveProvider: resolveProvider,
-            providerCatalog: providerCatalog, tools: registry, memory: memory, log: logSink)
+            providerCatalog: providerCatalog, tools: registry, memory: memory,
+            tokenBudget: tokenBudget, log: logSink)
     } ?? AgentHost(
         entryModule: entryModule, roots: moduleRoots,
         makeProvider: makeProvider, resolveProvider: resolveProvider,
         providerCatalog: providerCatalog, tools: registry, memory: memory,
+        tokenBudget: tokenBudget,
         installThreads: statePath == nil,   // snapshot-capable (no threads) when persisting
         log: logSink)
     guard let agent = agentOpt else {
