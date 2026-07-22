@@ -222,6 +222,26 @@ public nonisolated final class TyKaozHost {
         }
     }
 
+    public func memorySearch(params: [Any], reply: HostReply) {
+        guard let query = params.first as? String else {
+            reply.reject(AgentJSON.string("memory.search expects [query, limit?]"))
+            return
+        }
+        let limit = (params.count > 1 ? (params[1] as? NSNumber)?.intValue : nil) ?? 5
+        let memory = self.memory
+        Task { @MainActor in
+            guard let retriever = memory as? MemoryRetrieving else {
+                reply.reject(AgentJSON.string("this memory store has no semantic search"))
+                return
+            }
+            let results = await retriever.search(query, limit: limit)
+            reply.resolve(AgentJSON.string(results.map {
+                ["id": $0.memory.id.uuidString, "title": $0.memory.title,
+                 "content": $0.memory.content, "score": Double($0.score)]
+            }))
+        }
+    }
+
     // MARK: - Helpers
 
     @MainActor
@@ -373,4 +393,13 @@ func xsbTySchedule(
 func xsbTyCancel(_ bridge: UnsafeMutableRawPointer?, _ handle: UInt32) {
     guard let bridge, let host = tyHost(bridge) else { return }
     host.onCancel?(handle)
+}
+
+@_cdecl("xsbTyMemorySearch")
+func xsbTyMemorySearch(
+    _ bridge: UnsafeMutableRawPointer?, _ id: UInt32, _ json: UnsafePointer<CChar>?
+) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.memorySearch(
+        params: AgentJSON.params(string(json)), reply: HostReply(bridge: bridge, id: id))
 }

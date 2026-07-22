@@ -190,7 +190,17 @@ let providerCatalog: [ProviderDescriptor] = [
 
 let memoryURL = URL(fileURLWithPath: env["TYKAOZ_MEMORY_FILE"]
     ?? (NSHomeDirectory() + "/.tykaoz/cli-memories.json"))
-let memory = CLIMemoryStore(fileURL: memoryURL)
+// Semantic memory: host.memory.search ranks notes by embedding similarity.
+// Default embedder is dependency-free (lexical); --embed-ollama MODEL uses a
+// real embedding model (needs a running Ollama) for true semantic recall.
+let embedder: any EmbeddingProvider = {
+    if let model = popFlag("--embed-ollama"), !model.isEmpty,
+       let base = URL(string: env["OLLAMA_BASE_URL"] ?? "http://localhost:11434") {
+        return OllamaEmbeddingProvider(baseURL: base, modelID: model, dimension: 768)
+    }
+    return HashingEmbeddingProvider()
+}()
+let memory = SemanticMemoryStore(fileURL: memoryURL, embedder: embedder)
 
 // Native (OS-bound) tools: memory + files stay in Swift.
 var tools: [any Tool] = [
