@@ -50,6 +50,9 @@ public nonisolated final class TyKaozHost {
     public nonisolated(unsafe) var onFail: ((String) -> Void)?
     /// JS-tool result delivery (`__toolResult`) for `JSToolBundle`.
     public nonisolated(unsafe) var onToolResult: (([Any]) -> Void)?
+    /// Resident delivery outcome (`__deliverResult`, keyed by deliveryId) for
+    /// `AgentHost` — settles one delivery without ending the run.
+    public nonisolated(unsafe) var onDeliverResult: ((UInt32, String, Bool) -> Void)?
 
     public init(
         makeProvider: @escaping @Sendable () -> (any LLMProvider)?,
@@ -342,4 +345,13 @@ func xsbTyMemoryList(_ bridge: UnsafeMutableRawPointer?, _ id: UInt32) {
 func xsbTyToolResult(_ bridge: UnsafeMutableRawPointer?, _ json: UnsafePointer<CChar>?) {
     guard let bridge, let host = tyHost(bridge) else { return }
     host.onToolResult?(AgentJSON.params(string(json)))
+}
+
+@_cdecl("xsbTyDeliverResult")
+func xsbTyDeliverResult(
+    _ bridge: UnsafeMutableRawPointer?, _ id: UInt32,
+    _ json: UnsafePointer<CChar>?, _ isError: Int32
+) {
+    guard let bridge, let host = tyHost(bridge) else { return }
+    host.onDeliverResult?(id, string(json), isError != 0)
 }

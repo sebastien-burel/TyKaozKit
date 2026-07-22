@@ -32,6 +32,7 @@ extern void xsbTyMemorySave(void* bridge, uint32_t id, const char* json);
 extern void xsbTyMemoryRead(void* bridge, uint32_t id, const char* json);
 extern void xsbTyMemoryList(void* bridge, uint32_t id);
 extern void xsbTyToolResult(void* bridge, const char* json);
+extern void xsbTyDeliverResult(void* bridge, uint32_t id, const char* json, int isError);
 
 /* JSON.stringify([xsArg(0..n-1)]) as a malloc'd string — the positional params
  * array Swift expects (AgentJSON.params). Uses xsResult as scratch, so call it
@@ -85,6 +86,17 @@ static void xs_ty_tool_result(xsMachine* the)
     char* json = ty_args_json(the, 3);
     xsbTyToolResult(bridge, json);
     free(json);
+}
+
+/* host.__deliverResult(deliveryId, resultJSON, isError) — the outcome of one
+ * resident delivery (__deliver), keyed by the Swift-allocated deliveryId. Unlike
+ * __report, it does NOT end the run — the engine stays alive. */
+static void xs_ty_deliver_result(xsMachine* the)
+{
+    void* bridge = xsGetContext(the);
+    uint32_t id = (uint32_t)xsToInteger(xsArg(0));
+    int isError = xsToBoolean(xsArg(2));
+    xsbTyDeliverResult(bridge, id, xsToString(xsArg(1)), isError);
 }
 
 /* host.__chat(messages, tools, selector, onToken) — async LLM turn with token
@@ -157,6 +169,7 @@ static const XSBridgeHostFn gTyHostTable[] = {
     { "memory.save", xs_ty_memory_save },
     { "memory.read", xs_ty_memory_read },
     { "memory.list", xs_ty_memory_list },
+    { "__deliverResult", xs_ty_deliver_result },
 };
 
 static void ty_register(void)
@@ -183,6 +196,8 @@ void xsBridgeTyKaozInstall(void* machine)
             xsSet(xsVar(0), xsID("__fail"), xsVar(2));
             xsVar(2) = xsNewHostFunction(xs_ty_tool_result, 3);
             xsSet(xsVar(0), xsID("__toolResult"), xsVar(2));
+            xsVar(2) = xsNewHostFunction(xs_ty_deliver_result, 3);
+            xsSet(xsVar(0), xsID("__deliverResult"), xsVar(2));
             xsVar(2) = xsNewHostFunction(xs_ty_chat, 4);
             xsSet(xsVar(0), xsID("__chat"), xsVar(2));
 

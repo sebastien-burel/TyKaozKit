@@ -43,12 +43,22 @@ func popFlagAll(_ name: String) -> [String] {
     while let value = popFlag(name) { values.append(value) }
     return values
 }
+/// A boolean flag (present/absent), removed from `args`.
+func popBool(_ name: String) -> Bool {
+    guard let i = args.firstIndex(of: name) else { return false }
+    args.remove(at: i)
+    return true
+}
 
 let providerName = popFlag("--provider") ?? "anthropic"
 let model = popFlag("--model") ?? ProcessInfo.processInfo.environment["TYKAOZ_MODEL"]
 let inputJSON = popFlag("--input")
 let libraryDir = popFlag("--library")
 let timeout = TimeInterval(popFlag("--timeout") ?? "") ?? 60
+// Resident mode: keep one engine alive and deliver a JSON message per stdin
+// line to the agent's handler (onMessage), printing each result. Engine + JS
+// heap persist between messages (state survives across turns).
+let resident = popBool("--resident")
 
 // Module roots (Moddable-style): named external roots the agent imports from
 // with `import "nom/module"`. Each `--modules nom=dir` maps a prefix to a dir;
@@ -228,6 +238,39 @@ if let libraryDir {
     moduleRoots.append(("", URL(fileURLWithPath: libraryDir, isDirectory: true).path))
 }
 moduleRoots.append(contentsOf: namedModuleRoots)
+
+if resident {
+    // A resident agent: one engine, many deliveries. Read a JSON message per
+    // stdin line, deliver it, print the handler's JSON result. State persists.
+    guard let agent = AgentHost(
+        entryModule: entryModule,
+        roots: moduleRoots,
+        makeProvider: makeProvider,
+        resolveProvider: resolveProvider,
+        providerCatalog: providerCatalog,
+        tools: registry,
+        memory: memory,
+        log: { FileHandle.standardError.write(Data("[log] \($0)\n".utf8)) })
+    else {
+        die("error: cannot create resident agent")
+    }
+    while let line = readLine(strippingNewline: true) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { continue }
+        let payload: Any = trimmed.data(using: .utf8).flatMap {
+            try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed])
+        } ?? trimmed
+        do {
+            let result = try await agent.deliver(kind: "message", payload: payload)
+            print(result)
+        } catch {
+            FileHandle.standardError.write(
+                Data("error: \(error.localizedDescription)\n".utf8))
+        }
+    }
+    agent.close()
+    exit(0)
+}
 
 do {
     let result = try await runtime.runRooted(
