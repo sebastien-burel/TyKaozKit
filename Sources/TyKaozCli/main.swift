@@ -59,6 +59,10 @@ let timeout = TimeInterval(popFlag("--timeout") ?? "") ?? 60
 // line to the agent's handler (onMessage), printing each result. Engine + JS
 // heap persist between messages (state survives across turns).
 let resident = popBool("--resident")
+// Persist the resident agent's JS heap across processes: restore from this file
+// on start (if it exists), snapshot back to it on exit. Implies a non-threaded
+// engine (snapshot-capable).
+let statePath = popFlag("--state")
 
 // Module roots (Moddable-style): named external roots the agent imports from
 // with `import "nom/module"`. Each `--modules nom=dir` maps a prefix to a dir;
@@ -242,16 +246,25 @@ moduleRoots.append(contentsOf: namedModuleRoots)
 if resident {
     // A resident agent: one engine, many deliveries. Read a JSON message per
     // stdin line, deliver it, print the handler's JSON result. State persists.
-    guard let agent = AgentHost(
-        entryModule: entryModule,
-        roots: moduleRoots,
-        makeProvider: makeProvider,
-        resolveProvider: resolveProvider,
-        providerCatalog: providerCatalog,
-        tools: registry,
-        memory: memory,
-        log: { FileHandle.standardError.write(Data("[log] \($0)\n".utf8)) })
-    else {
+    let logSink: @Sendable (String) -> Void = {
+        FileHandle.standardError.write(Data("[log] \($0)\n".utf8))
+    }
+    let restored = statePath.flatMap { p -> Data? in
+        FileManager.default.fileExists(atPath: p)
+            ? try? Data(contentsOf: URL(fileURLWithPath: p)) : nil
+    }
+    let agentOpt: AgentHost? = restored.map { data in
+        AgentHost(
+            snapshot: data, roots: moduleRoots,
+            makeProvider: makeProvider, resolveProvider: resolveProvider,
+            providerCatalog: providerCatalog, tools: registry, memory: memory, log: logSink)
+    } ?? AgentHost(
+        entryModule: entryModule, roots: moduleRoots,
+        makeProvider: makeProvider, resolveProvider: resolveProvider,
+        providerCatalog: providerCatalog, tools: registry, memory: memory,
+        installThreads: statePath == nil,   // snapshot-capable (no threads) when persisting
+        log: logSink)
+    guard let agent = agentOpt else {
         die("error: cannot create resident agent")
     }
     while let line = readLine(strippingNewline: true) {
@@ -261,11 +274,21 @@ if resident {
             try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed])
         } ?? trimmed
         do {
-            let result = try await agent.deliver(kind: "message", payload: payload)
+            let result = try await agent.deliver(
+                kind: "message", payload: payload, timeout: timeout)
             print(result)
         } catch {
             FileHandle.standardError.write(
                 Data("error: \(error.localizedDescription)\n".utf8))
+        }
+    }
+    // Persist the JS heap (state) for the next process, if requested.
+    if let statePath {
+        do {
+            try agent.writeSnapshot().write(to: URL(fileURLWithPath: statePath))
+        } catch {
+            FileHandle.standardError.write(
+                Data("snapshot failed: \(error.localizedDescription)\n".utf8))
         }
     }
     agent.close()
