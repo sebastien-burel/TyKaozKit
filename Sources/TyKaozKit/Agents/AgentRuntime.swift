@@ -34,6 +34,7 @@ public nonisolated final class AgentRuntime {
     private let tools: ToolRegistry
     private let memory: MemoryStoring
     private let tokenBudget: Int?
+    private let persona: String?
     private let log: @Sendable (String) -> Void
 
     public init(
@@ -43,6 +44,7 @@ public nonisolated final class AgentRuntime {
         tools: ToolRegistry,
         memory: MemoryStoring,
         tokenBudget: Int? = nil,
+        persona: String? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.makeProvider = makeProvider
@@ -51,6 +53,7 @@ public nonisolated final class AgentRuntime {
         self.tools = tools
         self.memory = memory
         self.tokenBudget = tokenBudget
+        self.persona = persona
         self.log = log
     }
 
@@ -68,16 +71,16 @@ public nonisolated final class AgentRuntime {
         let staging = try AgentModuleStaging(agentSource: script, libraryRoot: libraryRoot)
         // Enable JS-initiated spawn: a script may `new Thread()` + `new Service()`
         // to run sub-agents, each a child engine with this same host wiring.
-        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, tools, memory, log] in
+        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, persona, tools, memory, log] in
             TyKaozHost(
                 makeProvider: makeProvider, resolveProvider: resolveProvider,
                 providerCatalog: providerCatalog, tools: tools, memory: memory,
-                tokenBudget: tokenBudget, log: log)
+                tokenBudget: tokenBudget, persona: persona, log: log)
         }
         let host = TyKaozHost(
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: tools, memory: memory,
-            tokenBudget: tokenBudget, log: log)
+            tokenBudget: tokenBudget, persona: persona, log: log)
         return try await withCheckedThrowingContinuation { continuation in
             let session = AgentSession(
                 host: host, entry: staging.agentPath, staging: staging,
@@ -102,16 +105,16 @@ public nonisolated final class AgentRuntime {
         input: Any? = nil,
         timeout: TimeInterval = 10
     ) async throws -> String {
-        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, tools, memory, log] in
+        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, persona, tools, memory, log] in
             TyKaozHost(
                 makeProvider: makeProvider, resolveProvider: resolveProvider,
                 providerCatalog: providerCatalog, tools: tools, memory: memory,
-                tokenBudget: tokenBudget, log: log)
+                tokenBudget: tokenBudget, persona: persona, log: log)
         }
         let host = TyKaozHost(
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: tools, memory: memory,
-            tokenBudget: tokenBudget, log: log)
+            tokenBudget: tokenBudget, persona: persona, log: log)
         return try await withCheckedThrowingContinuation { continuation in
             let session = AgentSession(
                 host: host, entry: entryModule, roots: roots, continuation: continuation)
@@ -136,16 +139,16 @@ public nonisolated final class AgentRuntime {
     ) async throws -> String {
         // libraryRoot: nil — stage the agent alone, no folder copy.
         let staging = try AgentModuleStaging(agentSource: source, libraryRoot: nil)
-        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, tools, memory, log] in
+        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, persona, tools, memory, log] in
             TyKaozHost(
                 makeProvider: makeProvider, resolveProvider: resolveProvider,
                 providerCatalog: providerCatalog, tools: tools, memory: memory,
-                tokenBudget: tokenBudget, log: log)
+                tokenBudget: tokenBudget, persona: persona, log: log)
         }
         let host = TyKaozHost(
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: tools, memory: memory,
-            tokenBudget: tokenBudget, log: log)
+            tokenBudget: tokenBudget, persona: persona, log: log)
         // The staged agent's dir is the first default root; `import "agent"`
         // resolves to it, real folders follow for the agent's own imports.
         var allRoots: [(prefix: String, dir: String)] = [("", staging.root.path)]

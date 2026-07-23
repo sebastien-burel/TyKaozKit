@@ -98,6 +98,11 @@ let shellDir = popFlag("--shell-dir")
 // Hard token budget (prompt+completion) across the run; further host.llm.chat
 // calls reject once exceeded. The agent can also read host.usage() to self-limit.
 let tokenBudget = popFlag("--budget").flatMap { Int($0) }
+// Persona / SOUL file: its text is prepended as the base system message of every
+// host.llm.chat, giving the agent a stable identity + standing instructions.
+let persona = popFlag("--persona").flatMap {
+    try? String(contentsOf: URL(fileURLWithPath: $0), encoding: .utf8)
+}
 
 // Channels (Phase 5). `--allow-http [--http-host H ...]` enables the outbound
 // http_request tool (optionally host-restricted). `--webhook PORT` runs an
@@ -133,7 +138,7 @@ guard let scriptPath = args.first else {
         [--modules nom=dir ...] [--resident [--daemon] [--state FILE]] \
         [--allow-write DIR ...] [--allow-shell [--shell-dir DIR]] \
         [--allow-http [--http-host H ...]] [--webhook PORT] [--budget TOKENS] \
-        [--email]
+        [--email] [--persona FILE]
         """, code: 2)
 }
 
@@ -295,6 +300,7 @@ let runtime = AgentRuntime(
     tools: registry,
     memory: memory,
     tokenBudget: tokenBudget,
+    persona: persona,
     log: { FileHandle.standardError.write(Data("[log] \($0)\n".utf8)) })
 
 let input: Any? = inputJSON.flatMap {
@@ -335,12 +341,12 @@ if resident {
             snapshot: data, roots: moduleRoots,
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: registry, memory: memory,
-            tokenBudget: tokenBudget, log: logSink)
+            tokenBudget: tokenBudget, persona: persona, log: logSink)
     } ?? AgentHost(
         entryModule: entryModule, roots: moduleRoots,
         makeProvider: makeProvider, resolveProvider: resolveProvider,
         providerCatalog: providerCatalog, tools: registry, memory: memory,
-        tokenBudget: tokenBudget,
+        tokenBudget: tokenBudget, persona: persona,
         installThreads: statePath == nil,   // snapshot-capable (no threads) when persisting
         log: logSink)
     guard let agent = agentOpt else {
