@@ -5,17 +5,25 @@ import Foundation
 /// self-signed cert + a bridge-specific password). The tools drive `curl`, so
 /// STARTTLS, auth and the self-signed cert are handled by curl.
 public struct EmailConfig: Sendable {
+    /// How TLS is negotiated. Recent Proton Bridge uses **implicit TLS** (SSL —
+    /// a `smtps://`/`imaps://` handshake on connect), NOT STARTTLS.
+    public enum TLSMode: String, Sendable { case ssl, starttls, none }
+
     public let host: String
     public let smtpPort: Int
     public let imapPort: Int
     public let username: String
     public let password: String
     public let fromAddress: String
-    public let starttls: Bool
+    /// Proton Bridge uses DIFFERENT TLS per protocol: SMTP = implicit (ssl),
+    /// IMAP = STARTTLS. Hence separate modes.
+    public let smtpTLS: TLSMode
+    public let imapTLS: TLSMode
 
     public init(
         host: String = "127.0.0.1", smtpPort: Int = 1025, imapPort: Int = 1143,
-        username: String, password: String, fromAddress: String, starttls: Bool = true
+        username: String, password: String, fromAddress: String,
+        smtpTLS: TLSMode = .ssl, imapTLS: TLSMode = .starttls
     ) {
         self.host = host
         self.smtpPort = smtpPort
@@ -23,13 +31,24 @@ public struct EmailConfig: Sendable {
         self.username = username
         self.password = password
         self.fromAddress = fromAddress
-        self.starttls = starttls
+        self.smtpTLS = smtpTLS
+        self.imapTLS = imapTLS
     }
 
-    /// Shared curl flags: credentials + STARTTLS (accepting the Bridge's cert).
-    var authTLS: [String] {
-        (password.isEmpty ? [] : ["--user", "\(username):\(password)"])
-            + (starttls ? ["--ssl-reqd", "--insecure"] : [])
+    /// URL scheme per mode: implicit TLS uses smtps/imaps; STARTTLS/none use the
+    /// plain scheme (STARTTLS then adds --ssl-reqd via `flags`).
+    var smtpURL: String { "\(smtpTLS == .ssl ? "smtps" : "smtp")://\(host):\(smtpPort)" }
+    func imapURL(_ path: String) -> String { "\(imapTLS == .ssl ? "imaps" : "imap")://\(host):\(imapPort)\(path)" }
+
+    /// curl flags for a protocol: credentials + TLS (accepting the self-signed cert).
+    func flags(_ mode: TLSMode) -> [String] {
+        var a = password.isEmpty ? [] : ["--user", "\(username):\(password)"]
+        switch mode {
+        case .ssl: a += ["--insecure"]                    // implicit TLS via smtps/imaps
+        case .starttls: a += ["--ssl-reqd", "--insecure"]
+        case .none: break
+        }
+        return a
     }
 }
 
@@ -76,12 +95,12 @@ public struct SendEmailTool: Tool {
             from: config.fromAddress, to: args.to, subject: args.subject, body: args.body)
         var curlArgs = [
             "--silent", "--show-error",
-            "--url", "smtp://\(config.host):\(config.smtpPort)",
+            "--url", config.smtpURL,
             "--mail-from", config.fromAddress,
         ]
         for r in recipients { curlArgs += ["--mail-rcpt", r] }
         curlArgs += ["--upload-file", "-"]
-        curlArgs += config.authTLS
+        curlArgs += config.flags(config.smtpTLS)
 
         let (exit, output) = await Subprocess.run(
             curlPath, curlArgs, stdin: Data(message.utf8), timeout: 60)
@@ -135,11 +154,11 @@ public struct ReadEmailTool: Tool {
 
     public func execute(arguments: Data) async throws -> String {
         let limit = min((try? JSONDecoder().decode(Args.self, from: arguments))?.limit ?? 5, 20)
-        let base = "imap://\(config.host):\(config.imapPort)/INBOX"
 
         // Message count via STATUS.
         let (se, statusOut) = await Subprocess.run(
-            curlPath, ["--silent", "--url", base, "--request", "STATUS INBOX (MESSAGES)"] + config.authTLS)
+            curlPath, ["--silent", "--url", config.imapURL("/INBOX"),
+                       "--request", "STATUS INBOX (MESSAGES)"] + config.flags(config.imapTLS))
         guard se == 0 else {
             throw ToolError.execution(message: "read_email (status) failed (curl \(se)): \(statusOut.prefix(300))")
         }
@@ -150,7 +169,7 @@ public struct ReadEmailTool: Tool {
         let start = max(1, count - limit + 1)
         for seq in stride(from: count, through: start, by: -1) {
             let (fe, raw) = await Subprocess.run(
-                curlPath, ["--silent", "--url", "\(base);MAILINDEX=\(seq)"] + config.authTLS)
+                curlPath, ["--silent", "--url", config.imapURL("/INBOX;MAILINDEX=\(seq)")] + config.flags(config.imapTLS))
             if fe == 0, !raw.isEmpty { results.append(Self.parseMessage(raw)) }
         }
         let json = (try? JSONSerialization.data(withJSONObject: results))
@@ -185,7 +204,42 @@ public struct ReadEmailTool: Tool {
             "from": headers["from"] ?? "",
             "subject": headers["subject"] ?? "",
             "date": headers["date"] ?? "",
-            "snippet": String(body.prefix(300)),
+            "snippet": String(cleanSnippet(body).prefix(300)),
         ]
+    }
+
+    /// Make a readable snippet: decode quoted-printable, strip HTML tags, and
+    /// collapse whitespace (email bodies are usually QP-encoded and often HTML).
+    private static func cleanSnippet(_ raw: String) -> String {
+        var s = decodeQuotedPrintable(raw)
+        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
+        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Decode quoted-printable to UTF-8 (=XX byte escapes, =\r\n soft breaks).
+    private static func decodeQuotedPrintable(_ s: String) -> String {
+        let arr = Array(s.utf8)
+        var bytes: [UInt8] = []
+        var i = 0
+        func hex(_ b: UInt8) -> Int? {
+            switch b {
+            case 0x30...0x39: return Int(b - 0x30)
+            case 0x41...0x46: return Int(b - 0x41 + 10)
+            case 0x61...0x66: return Int(b - 0x61 + 10)
+            default: return nil
+            }
+        }
+        while i < arr.count {
+            if arr[i] == UInt8(ascii: "="), i + 2 < arr.count {
+                if arr[i + 1] == 0x0D, arr[i + 2] == 0x0A { i += 3; continue }   // soft line break
+                if let hi = hex(arr[i + 1]), let lo = hex(arr[i + 2]) {
+                    bytes.append(UInt8(hi * 16 + lo)); i += 3; continue
+                }
+            }
+            bytes.append(arr[i]); i += 1
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

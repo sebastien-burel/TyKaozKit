@@ -264,7 +264,10 @@ if allowEmail {
         username: env["PROTON_BRIDGE_USER"] ?? "",
         password: env["PROTON_BRIDGE_PASS"] ?? "",
         fromAddress: env["PROTON_BRIDGE_FROM"] ?? env["PROTON_BRIDGE_USER"] ?? "",
-        starttls: (env["PROTON_BRIDGE_TLS"] ?? "1") != "0")
+        // Proton Bridge: SMTP = implicit TLS (ssl), IMAP = STARTTLS. Override each
+        // with PROTON_BRIDGE_SMTP_TLS / _IMAP_TLS = ssl | starttls | none.
+        smtpTLS: EmailConfig.TLSMode(rawValue: env["PROTON_BRIDGE_SMTP_TLS"] ?? "ssl") ?? .ssl,
+        imapTLS: EmailConfig.TLSMode(rawValue: env["PROTON_BRIDGE_IMAP_TLS"] ?? "starttls") ?? .starttls)
     tools.append(SendEmailTool(config: emailConfig))
     tools.append(ReadEmailTool(config: emailConfig))
 }
