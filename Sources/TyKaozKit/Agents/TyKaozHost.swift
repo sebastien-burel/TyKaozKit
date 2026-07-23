@@ -47,6 +47,11 @@ public nonisolated final class TyKaozHost {
     /// host's chats; once exceeded, further `host.llm.chat` calls reject. nil =
     /// unbounded. The agent can also read `host.usage()` and self-limit.
     public let tokenBudget: Int?
+    /// Base persona / identity ("SOUL"): prepended as the leading system message
+    /// of every `host.llm.chat` (merged with the agent's own system message if
+    /// it supplies one), so the model keeps a consistent voice and standing
+    /// instructions without the agent re-stating them each turn.
+    public let persona: String?
 
     // Cumulative usage across all chats on this host (thread-safe).
     private let usageLock = NSLock()
@@ -75,6 +80,7 @@ public nonisolated final class TyKaozHost {
         tools: ToolRegistry,
         memory: MemoryStoring,
         tokenBudget: Int? = nil,
+        persona: String? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.makeProvider = makeProvider
@@ -83,6 +89,7 @@ public nonisolated final class TyKaozHost {
         self.tools = tools
         self.memory = memory
         self.tokenBudget = tokenBudget
+        self.persona = persona
         self.log = log
     }
 
@@ -134,6 +141,15 @@ public nonisolated final class TyKaozHost {
             return
         }
         var history = AgentJSON.decodeMessages(params.first)
+        // Prepend the persona as the leading system message (merging with the
+        // agent's own system message if present), so it applies to every turn.
+        if let persona, !persona.isEmpty {
+            if let first = history.first, first.role == .system {
+                history[0] = ChatMessage(role: .system, content: persona + "\n\n" + first.content)
+            } else {
+                history.insert(ChatMessage(role: .system, content: persona), at: 0)
+            }
+        }
         let requestedNames: [String] = (params.count > 1 ? params[1] as? [Any] : nil)?
             .compactMap { $0 as? String } ?? []
 

@@ -62,13 +62,14 @@ public nonisolated final class AgentHost: @unchecked Sendable {
         tools: ToolRegistry,
         memory: MemoryStoring,
         tokenBudget: Int? = nil,
+        persona: String? = nil,
         installThreads: Bool = true,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         let host = Self.makeHost(
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: tools, memory: memory,
-            tokenBudget: tokenBudget, log: log)
+            tokenBudget: tokenBudget, persona: persona, log: log)
         self.host = host
         guard let engine = XSEngine.tyKaoz(host: host) else { return nil }
         self.engine = engine
@@ -96,12 +97,13 @@ public nonisolated final class AgentHost: @unchecked Sendable {
         tools: ToolRegistry,
         memory: MemoryStoring,
         tokenBudget: Int? = nil,
+        persona: String? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         let host = Self.makeHost(
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: tools, memory: memory,
-            tokenBudget: tokenBudget, log: log)
+            tokenBudget: tokenBudget, persona: persona, log: log)
         self.host = host
         xsBridgeTyKaozRegister()   // host table must be registered before reading a snapshot
         guard let engine = XSEngine(snapshot: snapshot) else { return nil }
@@ -124,18 +126,19 @@ public nonisolated final class AgentHost: @unchecked Sendable {
         tools: ToolRegistry,
         memory: MemoryStoring,
         tokenBudget: Int?,
+        persona: String?,
         log: @escaping @Sendable (String) -> Void
     ) -> TyKaozHost {
-        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, tools, memory, log] in
+        TyKaozThreads.register { [makeProvider, resolveProvider, providerCatalog, tokenBudget, persona, tools, memory, log] in
             TyKaozHost(
                 makeProvider: makeProvider, resolveProvider: resolveProvider,
                 providerCatalog: providerCatalog, tools: tools, memory: memory,
-                tokenBudget: tokenBudget, log: log)
+                tokenBudget: tokenBudget, persona: persona, log: log)
         }
         return TyKaozHost(
             makeProvider: makeProvider, resolveProvider: resolveProvider,
             providerCatalog: providerCatalog, tools: tools, memory: memory,
-            tokenBudget: tokenBudget, log: log)
+            tokenBudget: tokenBudget, persona: persona, log: log)
     }
 
     /// Serialize the resident agent's JS heap (state included) to bytes. Requires
